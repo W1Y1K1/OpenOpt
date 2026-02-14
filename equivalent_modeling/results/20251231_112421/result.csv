@@ -1,0 +1,3 @@
+,time_usage,use_mc,custom_mc,gen_unused_cells,r_delay,r_pavg,r_pstc,r_pdyn
+2025-12-31 11:24:33,00:00:11,False,False,True,[6.3492289e-10],[-3.746727e-05],[-9.641848e-07],[-0.00010221]
+2025-12-31 11:24:41,00:00:07,False,False,False,[6.3438312e-10],[-3.751545e-05],[-9.637069e-07],[-0.00010234]
