@@ -1,9 +1,7 @@
 # **OpenOpt: An Open-Source SRAM Optimizer Based on Equivalent Circuit Model**
 
 ![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)
-![License](https://img.shields.io/badge/License-Apache--2.0-green.svg)
 ![PDK](https://img.shields.io/badge/PDK-FreePDK45-orange.svg)
-![Speedup](https://img.shields.io/badge/Speedup-up%20to%2061.4×-brightgreen.svg)
 
 This repository contains the implementation of:
 
