@@ -9,7 +9,7 @@ This repository contains the implementation of:
 
 **OpenOpt: An Open-Source SRAM Architecture and Sizing Co-Optimization Framework Based on Equivalent Circuit Model**
 
-OpenOpt addresses the PPA (Power, Performance, Area) trade-off challenges and large-scale array SPICE simulation efficiency bottlenecks in SRAM design. It provides a comprehensive co-optimization platform that jointly searches architecture parameters (row/column counts, multiplexing ratio) and transistor-level sizing within a unified design space.
+OpenOpt addresses the PPA (Power, Performance, Area) trade-off challenges and large-scale array SPICE simulation efficiency bottlenecks in SRAM design. It provides a comprehensive co-optimization platform that jointly searches architecture parameters (row/column counts, array counts) and transistor-level sizing within a unified design space.
 
 ---
 
@@ -25,9 +25,9 @@ OpenOpt addresses these challenges through:
 
 - **Equivalent Circuit Model**: Simplifies inactive SRAM cells into equivalent RC loads and static power models, achieving up to **61.4× simulation speedup** while maintaining high fidelity (read/write delay error <0.05%, power error <1.28%)
 
-- **Architecture-Sizing Co-optimization**: Joint search space covering row/column counts, multiplexing ratio, transistor W/L, and threshold types
+- **Architecture-Sizing Co-optimization**: Joint search space covering row/column counts, array counts, transistor W/L, and threshold types
 
-- **Seven Optimization Algorithms**: SA, PSO, CBO, SMAC, RoSE-Opt, NSGA-II, and MOEA/D
+- **Multiple Optimization Algorithms**: SA, PSO, CBO, SMAC, RoSE-Opt, NSGA-II, MOEA/D, and Random
 
 ---
 
@@ -54,11 +54,10 @@ OpenOpt addresses these challenges through:
 | Level | Parameters | Description |
 |-------|------------|-------------|
 | Architecture | num_rows, num_cols | Array dimensions |
-| Architecture | mux_ratio | Column multiplexing ratio |
 | Architecture | num_arrays | Number of arrays under capacity constraint |
 | Transistor | W_PD, W_PU, W_PG | Transistor widths |
 | Transistor | L | Channel length |
-| Transistor | Vth_type | Threshold voltage type (VTL/VTG/VTH) |
+| Transistor | nmos_model_name, pmos_model_name | Threshold model selection |
 
 ### ✔️ Rich Algorithm Library
 
@@ -71,6 +70,7 @@ OpenOpt addresses these challenges through:
 | RoSE-Opt | Single-objective | Bayesian Optimization with PPO agent |
 | NSGA-II | Multi-objective | Non-dominated Sorting Genetic Algorithm II |
 | MOEA/D | Multi-objective | Multi-objective EA based on Decomposition |
+| Random | Baseline | Random search for comparison |
 
 ---
 
@@ -110,25 +110,18 @@ OpenOpt/
 │   ├── config_sram.yaml                # Optimization configuration
 │   ├── demo_nsgaii.py                  # NSGA-II optimizer
 │   ├── demo_moead.py                   # MOEA/D optimizer
-│   ├── demo_mobo.py                    # Multi-objective Bayesian Optimization
 │   ├── demo_cbo.py                     # Constrained Bayesian Optimization
 │   ├── demo_smac.py                    # SMAC optimizer
 │   ├── demo_pso.py                     # Particle Swarm Optimization
 │   ├── demo_sa.py                      # Simulated Annealing
 │   ├── demo_roseopt.py                 # RoSE-Opt integration
 │   ├── demo_random.py                  # Random search baseline
-│   ├── sram_lef_generator.py           # LEF file generator for P&R
 │   └── NSGA-II/                        # NSGA-II core implementation
 │       ├── problem.py                  # Problem definition
 │       ├── individual.py               # Individual representation
 │       ├── population.py               # Population management
 │       ├── evolution.py                # Evolution main loop
 │       └── nsga2_utils.py              # Non-dominated sort, crowding distance
-├── MOBO/                               # Multi-objective Bayesian Optimization
-│   ├── acquisition.py                  # EHVI acquisition function
-│   ├── bayesian_optimizer.py           # Bayesian optimizer core
-│   ├── problem.py                      # Problem definition
-│   └── main.py                         # MOBO entry point
 ├── tran_models/                        # FreePDK45 transistor models
 │   ├── models_TT.spice                 # Typical-Typical corner
 │   ├── models_FF.spice                 # Fast-Fast corner
@@ -136,11 +129,13 @@ OpenOpt/
 │   ├── models_FS.spice                 # Fast-Slow corner
 │   └── models_SF.spice                 # Slow-Fast corner
 ├── sim/                                # Simulation output directory
+├── environment.yml                     # Conda environment definition
+├── experiment.py                       # Joint optimization entry
 ├── config.py                           # Configuration loader
 ├── utils.py                            # Utility functions
 ├── main_sram.py                        # Main simulation entry
 ├── plot_data.py                        # Visualization utilities
-└── README.md
+└── OpenOpt_README.md                   # This document
 ```
 
 ---
@@ -157,40 +152,14 @@ cd OpenOpt
 ### Python Environment
 
 ```bash
-conda create -n openopt python=3.10
-conda activate openopt
-
-# Install PyTorch
-pip install torch==2.0.0 --index-url https://download.pytorch.org/whl/cpu
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
-### Required Dependencies
-
-```bash
-pip install numpy scipy matplotlib pandas pyyaml tqdm
-pip install PySpice scikit-learn
-pip install smac ConfigSpace    # For SMAC optimizer
-pip install botorch gpytorch    # For MOBO optimizer
+conda env create -f environment.yml
+conda activate OpenOPT
 ```
 
 ### External Tools
 
-- **ngspice** or **Xyce**: SPICE simulator backend
+- **ngspice** and **Xyce** are included in `environment.yml`
 - **FreePDK45**: Transistor models (included in `tran_models/`)
-
-```bash
-# Ubuntu/Debian
-sudo apt-get install ngspice
-
-# macOS
-brew install ngspice
-
-# Verify
-ngspice --version
-```
 
 ---
 
@@ -210,7 +179,18 @@ This generates results comparing:
 - Read/write delay accuracy
 - Power consumption accuracy
 
-### 2. Configure Global Parameters
+### 2. Run Joint Optimization
+
+```bash
+python experiment.py
+```
+
+You will be prompted to select:
+- Circuit mode: real cell or equivalent cell
+- Maximum iterations
+- Optimization algorithm (SA/PSO/SMAC/CBO/RoSE-Opt/MOEAD/NSGA-II/Random)
+
+### 3. Configure Global Parameters
 
 Edit `sram_compiler/config_yaml/global.yaml`:
 
@@ -223,7 +203,7 @@ monte_carlo_runs: 30        # Number of MC iterations
 pdk_path_TT: "tran_models/models_TT.spice"
 ```
 
-### 3. Run with Equivalent Model Acceleration
+### 4. Run with Equivalent Model Acceleration
 
 ```python
 from sram_compiler.testbenches.sram_6t_core_MC_testbench import Sram6TCoreMcTestbench
@@ -246,7 +226,7 @@ r_delay, r_pavg, r_pstc, r_pdyn = mc_testbench.run_mc_simulation(
 )
 ```
 
-### 4. Run Optimization Algorithms
+### 5. Run Optimization Algorithms
 
 ```bash
 # Multi-objective: MOEA/D (best performance)
@@ -263,6 +243,15 @@ python size_optimization/demo_sa.py
 
 # Single-objective: PSO
 python size_optimization/demo_pso.py
+
+# Single-objective: CBO
+python size_optimization/demo_cbo.py
+
+# Single-objective: RoSE-Opt
+python size_optimization/demo_roseopt.py
+
+# Baseline: Random search
+python size_optimization/demo_random.py
 ```
 
 ---
@@ -339,7 +328,7 @@ R_static,total = R_static,unit / (m × n - 1)
 
 ### Design Space
 
-OpenOpt supports an 8-dimensional mixed design space with capacity constraint:
+OpenOpt supports a mixed design space with a capacity constraint:
 
 ```
 r × c × n_a = Capacity
@@ -349,19 +338,20 @@ Where Capacity = 32KB × 8 = 262,144 bits (configurable).
 
 | Parameter | Type | Range | Description |
 |-----------|------|-------|-------------|
-| num_rows | Discrete | {8, 16, ..., 512} | Array row count |
-| num_cols | Discrete | {8, 16, ..., 256} | Array column count |
-| mux_ratio | Discrete | {1, 2, 4, 8} | Column multiplexing ratio |
+| num_rows | Discrete | {16, 32, ..., 512} | Array row count |
+| num_cols | Discrete | {16, 32, ..., 512} | Array column count |
+| num_arrays | Derived | Capacity / (rows × cols) | Array count under capacity constraint |
 | W_PD | Continuous | 45nm - 135nm | Pull-down NMOS width |
 | W_PU | Continuous | 45nm - 135nm | Pull-up PMOS width |
 | W_PG | Continuous | 67.5nm - 202.5nm | Pass-gate NMOS width |
 | L | Continuous | 30nm - 100nm | Channel length |
-| Vth_type | Categorical | VTL/VTG/VTH | Threshold voltage type |
+| nmos_model_name | Categorical | NMOS_VTL/VTG/VTH | NMOS threshold model |
+| pmos_model_name | Categorical | PMOS_VTL/VTG/VTH | PMOS threshold model |
 
 ### Figure of Merit (FoM)
 
 ```
-FoM = log₁₀(SNM_min / (P_max × D_max × √Area))
+FoM = log₁₀(SNM_min / (P_max × D_max × √total_area))
 ```
 
 Where:
@@ -369,23 +359,9 @@ Where:
 - `P_max = max(P_read, P_write)`
 - `D_max = max(T_read, T_write)`
 
-### Penalty Terms for Architecture Search
-
-**Chip-select delay:**
-```
-D'_rd = D_rd + τ_cs × log₂(n_a)
-D'_wr = D_wr + τ_cs × log₂(n_a)
-```
-
-**Mux correction:**
-```
-D'_rd = D_rd + τ_mux × log₂(n_a)
-P'_rd = P_rd + (n_a - 1) × log₂(n_a) × P_mux
-```
-
 ### Algorithm Configurations
 
-All algorithms use a budget of **1,500 SPICE simulations**:
+Budgets are defined by `experiment.py` (interactive) or in each demo script:
 
 | Algorithm | Key Parameters |
 |-----------|----------------|
@@ -469,67 +445,24 @@ for corner in ["TT", "FF", "SS", "FS", "SF"]:
     print(f"{corner}: Read SNM = {result}")
 ```
 
-### Custom Architecture Search
+### Custom Sizing Evaluation
 
 ```python
 from size_optimization.exp_utils import evaluate_sram
 
-# Define architecture + sizing parameters
+# Define sizing parameters
 params = {
-    'num_rows': 64,
-    'num_cols': 32,
-    'mux_ratio': 2,
     'pd_width': 0.072e-6,
     'pu_width': 0.072e-6,
     'pg_width': 0.162e-6,
     'length': 50e-9,
-    'nmos_model': 'NMOS_VTG',
-    'pmos_model': 'PMOS_VTH'
+    'nmos_model_name': 'NMOS_VTG',
+    'pmos_model_name': 'PMOS_VTH'
 }
 
 objectives, constraints, result, success = evaluate_sram(params)
 if success:
     print(f"FoM: {result['merit']:.4f}")
-```
-
-### LEF File Generation
-
-```python
-from sram_lef_generator import generate_sram_lef
-
-filename, macro_name = generate_sram_lef(
-    word_size=12,
-    num_words=1024,
-    pin_width=0.14,
-    pin_pitch=2.86,
-    output_dir="./lef"
-)
-```
-
----
-
-## 🔗 Integration with OpenACMv2
-
-OpenOpt serves as the SRAM optimization engine in the OpenACMv2 ACCO framework:
-
-```
-OpenACMv2 ACCO Framework
-├── Level-I (Architecture-Level)
-│   ├── Multiplier configuration (GNN-based)
-│   └── SRAM macro configuration (OpenOpt architecture search)
-└── Level-II (Transistor-Level)
-    ├── Compressor sizing
-    └── SRAM bit-cell sizing (OpenOpt transistor optimization)
-```
-
-### Integration Command
-
-```bash
-python DCIM_OPT/run_optimization.py \
-    --stage width \
-    --component sram \
-    --algo MOEAD \
-    --use_equiv_model True
 ```
 
 ---
@@ -544,7 +477,6 @@ python DCIM_OPT/run_optimization.py \
 | `Sram6TCoreMcTestbench` | Monte Carlo testbench with equivalent model support |
 | `ModifiedSRAMParameterSpace` | Optimization parameter space handler |
 | `BaseOptimizer` | Abstract base class for all optimizers |
-| `BayesianOptimizer` | MOBO with EHVI acquisition |
 
 ### Key Functions
 
@@ -553,8 +485,6 @@ python DCIM_OPT/run_optimization.py \
 | `evaluate_sram(params)` | Evaluate SRAM with given parameters |
 | `estimate_bitcell_area(...)` | Estimate bit-cell area from W/L |
 | `run_mc_simulation(...)` | Run Monte Carlo simulation |
-| `generate_sram_lef(...)` | Generate LEF file for P&R |
-| `compute_hypervolume(...)` | Compute hypervolume for multi-objective |
 
 ### Equivalent Model Parameters
 
@@ -576,12 +506,10 @@ This project is licensed under Apache-2.0. See [LICENSE](LICENSE) for details.
 
 OpenOpt builds on:
 
-- **OpenACM** - Approximate CiM compiler framework
 - **OpenYield** - Variation-aware SRAM simulation and high-fidelity models
 - **PySpice** - Python interface to SPICE simulators
 - **FreePDK45** - Open-source 45nm PDK
 - **SMAC3** - Sequential Model-based Algorithm Configuration
-- **BoTorch** - Bayesian Optimization in PyTorch
 
 ---
 
@@ -613,6 +541,6 @@ For questions or issues, please open a GitHub issue or contact the maintainers.
 - Initial release
 - Equivalent circuit model with up to 61.4× speedup
 - Architecture-sizing co-optimization framework
-- Seven optimization algorithms (SA, PSO, CBO, SMAC, RoSE-Opt, NSGA-II, MOEA/D)
+- Multiple optimization algorithms (SA, PSO, CBO, SMAC, RoSE-Opt, NSGA-II, MOEA/D, Random)
 - Five process corner support (TT/FF/SS/FS/SF)
 - FreePDK45 integration
