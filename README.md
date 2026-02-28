@@ -84,6 +84,7 @@ OpenOpt/
 │   │   ├── precharge_and_write_driver.py  # Precharge & write driver
 │   │   ├── mux_and_sa.py               # Column mux & sense amplifier
 │   │   ├── decoder.py                  # Address decoder
+│   │   ├── sram_cell_parasitics.py     # Parasitic models for SRAM cells
 │   │   └── standard_cell.py            # Standard cells (NAND, INV)
 │   ├── testbenches/
 │   │   ├── base_testbench.py           # Base testbench with timing setup
@@ -494,50 +495,10 @@ if success:
 
 ---
 
-## 📜 License
-
-This project is licensed under Apache-2.0. See [LICENSE](LICENSE) for details.
-
----
-
-## 🙏 Acknowledgements
-
-OpenOpt builds on:
-
-- **OpenYield** - Variation-aware SRAM simulation and high-fidelity models
-- **PySpice** - Python interface to SPICE simulators
-- **FreePDK45** - Open-source 45nm PDK
-- **SMAC3** - Sequential Model-based Algorithm Configuration
-
----
-
-## 📖 Citation
-
-If you use OpenOpt in your research, please cite:
-
-```bibtex
-@inproceedings{openopt2025,
-  title     = {OpenOpt: An Open-Source SRAM Optimizer Based on Equivalent Circuit Model},
-  author    = {Your Team},
-  booktitle = {Proceedings of the Conference},
-  year      = {2025},
-  note      = {SNM +66.7\%, Area -73.6\%, up to 61.4× simulation speedup}
-}
-```
-
----
-
-## 📞 Contact
-
-For questions or issues, please open a GitHub issue or contact the maintainers.
-
----
-
 ## 🗓️ Changelog
 
-### v1.0.0 (2025)
-- Initial release
-- Equivalent circuit model with up to 61.4× speedup
+### v1.0.0 (2026)
+- Equivalent circuit model 
 - Architecture-sizing co-optimization framework
 - Multiple optimization algorithms (SA, PSO, CBO, SMAC, RoSE-Opt, NSGA-II, MOEA/D, Random)
 - Five process corner support (TT/FF/SS/FS/SF)
