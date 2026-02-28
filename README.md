@@ -396,19 +396,6 @@ Budgets are defined by `experiment.py` (interactive) or in each demo script:
 | Area (mm²) | 0.4773 | **0.1253** | 0.1262 | 0.1211 | 0.1259 | 0.1338 | 0.2042 | 0.2270 |
 | **FoM** | 7.4689 | **8.2721** | 8.2577 | 8.2591 | 8.2482 | 8.2263 | 8.2356 | 8.2316 |
 
-### Key Improvements (MOEA/D vs Baseline)
-
-| Metric | Improvement |
-|--------|-------------|
-| SNM | **+66.7%** (0.174V → 0.290V) |
-| Area | **-73.6%** |
-| Read Delay | -11.3% |
-| Write Delay | -14.9% |
-| Peak Power | **-42.3%** |
-| Overall FoM | **+10.8%** |
-
----
-
 ## 🔧 Advanced Usage
 
 ### Process Corner Analysis
