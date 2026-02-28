@@ -319,7 +319,7 @@ R_static,total = R_static,unit / (m × n - 1)
 **Key Observations:**
 - Read/write delay error consistently <0.32%
 - Power error <1.28% for medium-scale arrays (32×16)
-- Error decreases as array size increases
+
 
 ---
 
