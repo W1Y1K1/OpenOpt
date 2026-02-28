@@ -407,14 +407,6 @@ Budgets are defined by `experiment.py` (interactive) or in each demo script:
 | Peak Power | **-42.3%** |
 | Overall FoM | **+10.8%** |
 
-### Algorithm Characteristics
-
-- **MOEA/D**: Best overall FoM, surpasses threshold of 8.25 after ~150 iterations
-- **NSGA-II**: Fast initial convergence, effective elitist strategy
-- **RoSE-Opt**: Good balance in low-power region
-- **SMAC**: Competitive FoM with Random Forest surrogate
-- **SA/PSO**: Lag behind in Area-SNM trade-off
-
 ---
 
 ## 🔧 Advanced Usage
