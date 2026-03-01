@@ -227,31 +227,29 @@ r_delay, r_pavg, r_pstc, r_pdyn = mc_testbench.run_mc_simulation(
 
 ### 5. Run Optimization Algorithms
 
+Run the main script which includes the optimization module:
+
 ```bash
-# Multi-objective: MOEA/D (best performance)
-python size_optimization/demo_moead.py
-
-# Multi-objective: NSGA-II
-python size_optimization/demo_nsgaii.py
-
-# Single-objective: SMAC
-python size_optimization/demo_smac.py
-
-# Single-objective: SA
-python size_optimization/demo_sa.py
-
-# Single-objective: PSO
-python size_optimization/demo_pso.py
-
-# Single-objective: CBO
-python size_optimization/demo_cbo.py
-
-# Single-objective: RoSE-Opt
-python size_optimization/demo_roseopt.py
-
-# Baseline: Random search
-python size_optimization/demo_random.py
+python experiment.py
 ```
+
+After the Monte Carlo simulation completes, you'll be prompted to select optimization settings:
+
+Select circuit mode:
+  Enter 1 for real circuit
+  Enter 2 for equivalent circuit
+
+Enter the maximum number of iterations for joint optimization:
+  Enter an integer (default=40)
+
+Select optimization algorithm for joint optimization:
+  Enter number (1=SA, 2=PSO, 3=SMAC, 4=CBO, 5=RoSE_Opt, 6=MOEAD, 7=MOBO, 8=NSGA-II)
+  Or enter name (SA/PSO/SMAC/CBO/RoSE_Opt/MOEAD/MOBO/NSGA-II)
+
+Output
+Results are saved in:
+size_optimization/experiment/<algorithm>/  - Optimization results and logs
+size_optimization/sim/                     - Simulation outputs
 
 ---
 
