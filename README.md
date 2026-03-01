@@ -21,7 +21,7 @@ As semiconductor process nodes continue to scale down, SRAM design faces two maj
 
 OpenOpt addresses these challenges through:
 
-- **Equivalent Circuit Model**: Simplifies inactive SRAM cells into equivalent RC loads and static power models, achieving up to **61.4× simulation speedup** while maintaining high fidelity (read/write delay error <0.05%, power error <1.28%)
+- **Equivalent Circuit Model**: Simplifies inactive SRAM cells into equivalent RC loads and static power models, achieving up to **61.4× simulation speedup** while maintaining high fidelity (read/write delay error <0.22%, power error <1.68%)
 
 - **Architecture-Sizing Co-optimization**: Joint search space covering row/column counts, array counts, transistor W/L, and threshold types
 
@@ -37,7 +37,7 @@ OpenOpt addresses these challenges through:
 - **WL Terminal Model**: Simplified capacitance model capturing piecewise behavior
 - **Static Power Model**: Large resistance from VDD to ground
 - **Linear Scalability**: Computational complexity decoupled from array size
-- **High Fidelity**: <0.05% delay error, <1.28% power error for medium-scale arrays
+- **High Fidelity**: <0.22% delay error, <1.68% power error across all tested scales (up to 512×512)
 
 ### ✔️ Complete 6T SRAM Simulation Framework
 
@@ -297,20 +297,20 @@ R_static,total = R_static,unit / (m × n - 1)
 
 ### Simulation Accuracy
 
-| Metric | 16×8 | 32×16 | 64×32 |
-|--------|------|-------|-------|
-| r_delay | -0.25% | -0.05% | 0.04% |
-| w_delay | 0.32% | 0.03% | -0.05% |
-| r_pavg | 0.21% | 0.50% | 0.76% |
-| w_pavg | -8.05% | -1.27% | 0.56% |
-| r_pdyn | 0.17% | 0.53% | 0.80% |
-| w_pdyn | -8.07% | -1.28% | 0.43% |
+| Metric | 32×16 | 128×64 | 512×512 |
+|--------|-------|--------|---------|
+| D_rd | −0.05% | 0.00% | −0.01% |
+| P_rd,avg | 0.50% | −0.86% | −0.92% |
+| P_rd,dyn | 0.53% | −0.92% | −0.97% |
+| P_rd,stc | −0.83% | 0.60% | 0.79% |
+| D_wr | 0.03% | 0.06% | 0.22% |
+| P_wr,avg | −1.27% | −0.67% | −0.59% |
+| P_wr,dyn | −1.28% | −0.71% | −0.69% |
+| P_wr,stc | −0.79% | 0.32% | 1.68% |
 
 **Key Observations:**
-- Read/write delay error consistently <0.32%
-- Power error <1.28% for medium-scale arrays (32×16)
-
-
+- Read/write delay error consistently <0.22% across all tested configurations
+- Power error <1.68% for all metrics, even at 512×512 scale
 ---
 
 ## 📊 Optimization Framework
