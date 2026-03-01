@@ -295,16 +295,6 @@ C_WL,total = (n - 1) × C_WL,unit
 R_static,total = R_static,unit / (m × n - 1)
 ```
 
-### Simulation Speedup Results
-
-| Array Size | Full Simulation | Equivalent Model | Speedup |
-|------------|-----------------|------------------|---------|
-| 16×16 | 0.54 hr | 0.07 hr | 8.1× |
-| 32×32 | 1.75 hr | 0.10 hr | 17.5× |
-| 64×64 | 3.50 hr | 0.14 hr | 24.9× |
-| 128×128 | 6.20 hr | 0.17 hr | 35.9× |
-| 512×512 | 9.80 hr | 0.16 hr | **61.4×** |
-
 ### Simulation Accuracy
 
 | Metric | 16×8 | 32×16 | 64×32 |
