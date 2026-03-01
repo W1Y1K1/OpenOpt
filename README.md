@@ -235,21 +235,24 @@ python experiment.py
 
 After the Monte Carlo simulation completes, you'll be prompted to select optimization settings:
 
+```
 Select circuit mode:
-  Enter 1 for real circuit
+  Enter 1 for real circuit 
   Enter 2 for equivalent circuit
 
 Enter the maximum number of iterations for joint optimization:
-  Enter an integer (default=40)
+  Enter an integer 
 
 Select optimization algorithm for joint optimization:
   Enter number (1=SA, 2=PSO, 3=SMAC, 4=CBO, 5=RoSE_Opt, 6=MOEAD, 7=MOBO, 8=NSGA-II)
   Or enter name (SA/PSO/SMAC/CBO/RoSE_Opt/MOEAD/MOBO/NSGA-II)
+```
 
-Output
+#### Output
+
 Results are saved in:
-size_optimization/experiment/<algorithm>/  - Optimization results and logs
-size_optimization/sim/                     - Simulation outputs
+* `size_optimization/experiment/<algorithm>/` - Optimization results 
+* `size_optimization/sim/` - Simulation outputs
 
 ---
 
