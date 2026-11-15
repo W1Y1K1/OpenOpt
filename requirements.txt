@@ -1,0 +1,7 @@
+# Python dependencies; install Xyce separately or use environment.yml.
+PySpice==1.5
+numpy>=1.26,<2
+pandas>=2.2,<3
+scipy>=1.11,<1.14
+matplotlib>=3.8,<3.10
+PyYAML>=6,<7

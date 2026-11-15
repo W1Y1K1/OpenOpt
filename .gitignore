@@ -18,3 +18,15 @@ open_pdks/
 sim/
 miniconda/
 **/__pycache__
+
+# Generated optimization runs and local verification output.
+.pytest_cache/
+.ruff_cache/
+.venv/
+size_optimization/experiment/
+size_optimization/smac_output/
+size_optimization/smac3_output/
+size_optimization/sim/
+size_optimization/openyield_v2/runs/
+size_optimization/tongji_results_*.csv
+/dev/

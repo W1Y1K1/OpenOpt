@@ -33,8 +33,9 @@ sys.path.append(project_root)
 # 从exp_utils导入工具函数
 from size_optimization.exp_utils import (
     seed_set, create_directories, evaluate_sram, ModifiedSRAMParameterSpace,
+    CompositeSRAMParameterSpace,
     BaseOptimizer, get_default_initial_params, run_initial_evaluation,
-    get_default_normalized_vector
+    get_default_normalized_vector, get_composite_initial_params,
 )
 
 
@@ -44,7 +45,7 @@ class SMACOptimizer(BaseOptimizer):
     SMAC优化器类
     """
     
-    def __init__(self, parameter_space, num_objectives=3, num_constraints=2, 
+    def __init__(self, parameter_space, num_objectives=4, num_constraints=2, 
                  initial_result=None, initial_params=None, evaluate_backend=None):
         """
         Initialize SMAC optimizer
@@ -87,11 +88,6 @@ class SMACOptimizer(BaseOptimizer):
         # Convert configuration to parameter vector
         # 将配置转换为参数向量
         x = torch.tensor([config[f"x_{i:03d}"] for i in range(self.dim)], dtype=torch.float32)
-        if self.evaluation_count == 0:
-            default_x = get_default_normalized_vector(self.parameter_space)
-            if default_x:
-                for i in range(min(len(default_x), self.dim)):
-                    x[i] = default_x[i]
         
         # Convert parameters
         # 转换参数
@@ -201,12 +197,12 @@ def main(config_path="config_sram.yaml", problem=None, max_iter=None):
         parameter_space = problem[0]
         external_eval_fn = problem[1]
     else:
-        parameter_space = ModifiedSRAMParameterSpace(config_path)
+        parameter_space = CompositeSRAMParameterSpace(config_path)
         external_eval_fn = None
 
-    # Define initial parameters
-    # 定义初始参数
-    initial_params = get_default_initial_params()
+    # Define initial parameters (bitcell + peripheral circuits from YAML)
+    # 定义初始参数（从YAML获取bitcell + 外围电路参数）
+    initial_params = get_composite_initial_params()
     
     print("Running initial point simulation to get baseline performance...")
     print("运行初始点仿真以获得基准性能...")

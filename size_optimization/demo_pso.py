@@ -26,36 +26,17 @@ sys.path.append(project_root)
 # 从exp_utils导入工具函数
 from size_optimization.exp_utils import (
     seed_set, create_directories, evaluate_sram, ModifiedSRAMParameterSpace,
-    OptimizationLogger, save_pareto_front, save_best_result, plot_merit_history,
-    plot_pareto_frontier, update_pareto_front, save_optimization_history,
-    get_default_normalized_vector, estimate_scaled_total_area
+    CompositeSRAMParameterSpace,
+    plot_merit_history,
+    plot_pareto_frontier, get_default_normalized_vector, estimate_scaled_total_area,
+    get_composite_initial_params,
 )
-
-
-def format_initial_result(result):
-    """
-    Convert evaluate_sram result format to expected format
-    将evaluate_sram结果格式转换为期望格式
-    """
-    if result is None:
-        return None
-    
-    formatted_result = {
-        'hold_snm': {'success': True, 'snm': result['hold_snm']},
-        'read_snm': {'success': True, 'snm': result['read_snm']},
-        'write_snm': {'success': True, 'snm': result['write_snm']},
-        'read': {'success': True, 'delay': result['read_delay'], 
-                 'power': abs(result['read_power'])},
-        'write': {'success': True, 'delay': result['write_delay'], 
-                  'power': abs(result['write_power'])}
-    }
-    return formatted_result
 
 
 # PSO optimizer class
 # PSO优化器类
 class PSOOptimizer:
-    def __init__(self, parameter_space, num_objectives=3, num_constraints=2, initial_result=None, initial_params=None, evaluate_backend=None):
+    def __init__(self, parameter_space, num_objectives=4, num_constraints=2, initial_result=None, initial_params=None, evaluate_backend=None):
         """
         Initialize PSO optimizer
         初始化PSO优化器
@@ -357,20 +338,12 @@ def main(config_path="config_sram.yaml", problem=None, max_iter=None):  # 添加
         parameter_space = problem[0]
         external_eval_fn = problem[1]
     else:
-        parameter_space = ModifiedSRAMParameterSpace(config_path)  # 支持配置文件
+        parameter_space = CompositeSRAMParameterSpace(config_path)  # 支持配置文件
         external_eval_fn = None
 
-    # Define initial parameters (same as in main.py)
-    # 定义初始参数（与main.py中相同）
-    initial_params = {
-        'nmos_model_name': 'NMOS_VTG',
-        'pmos_model_name': 'PMOS_VTG',
-        'pd_width': 0.205e-6,
-        'pu_width': 0.09e-6,
-        'pg_width': 0.135e-6,
-        'length': 50e-9,
-        'length_nm': 50
-    }
+    # Define initial parameters (bitcell + peripheral circuits from YAML)
+    # 定义初始参数（从YAML获取bitcell + 外围电路参数）
+    initial_params = get_composite_initial_params()
     
     print("Running initial point simulation to get baseline performance...")
     print("运行初始点仿真以获得基准性能...")

@@ -9,13 +9,13 @@ sim_params:
   vdd: 1.0                             # 供电电压(V) / Supply voltage (V)
   temperature: 27                       # 温度(摄氏度) / Temperature (Celsius)
   num_rows: 32                         # SRAM行数 / Number of SRAM rows
-  num_cols: 2                      # SRAM列数 / Number of SRAM columns
-  monte_carlo_runs: 2                 # 蒙特卡洛仿真次数 / Monte Carlo simulation runs
+  num_cols: 1                          # SRAM列数 / Number of SRAM columns
+  monte_carlo_runs: 1                  # 蒙特卡洛仿真次数 / Monte Carlo simulation runs
   timeout: 120                         # 仿真超时时间(秒) / Simulation timeout (seconds)
   
 # 工艺库配置 / PDK configuration
 pdk:
-  path: "tran_models/models_TT.spice"       # PDK路径 / PDK path
+  path: "model_lib/models.spice"       # PDK路径 / PDK path
 
 subcircuit:
   name: "SRAM_6T_Cell"
@@ -30,28 +30,28 @@ subcircuit:
       pmos_width:
         type: "continuous list"   # 参数类型：连续型列表 / Parameter type: continuous list
         names: ["pu"]           # PMOS device names
-        upper: [1.35e-7]         # 参数范围上界（默认值的+50%）
-        lower: [4.5e-8]        # 参数范围下界（默认值的-50%）
-        default: [9.0e-8]           # 默认值：基准pu宽度 / Default value: base pd width
+        upper: [1.0e-6]         # 参数范围上界
+        lower: [4.5e-8]         # 参数范围下界 (min ~45nm, matching PMOS_VTL min width)
+        default: [9e-8]           # 默认值：基准pu宽度 / Default value: base pd width
         description: "Pull-up transistor width / 上拉晶体管宽度"
-        other_default: 1.0e-9     # 其他PMOS名字不为'pu'时候的设置
+        other_default: 4.5e-8     # 其他PMOS名字不为'pu'时候的设置
         
       nmos_width:
         type: "continuous list"               # 参数类型：连续型 / Parameter type: continuous
         names: ['pd', 'pg']                   # NMOS器件名字
-        upper: [1.35e-7, 2.025e-7]            # 参数范围上界（默认值的+50%）
-        lower: [4.5e-8, 6.75e-8]            # 参数范围下界（默认值的-50%）
+        upper: [1.35e-7, 2.025e-7]            # 参数范围上界 
+        lower: [4.5e-8, 6.75e-8]            # 参数范围下界
         default: [9.0e-8, 1.35e-7]            # 默认值
         description: "Pull-up, pull-down transistor width / 上拉晶体管宽度"
-        other_default: 1.0e-9     # 其他PMOS名字不为'pd' 或 'pg' 时候的设置
+        other_default: 4.5e-8     # 其他NMOS名字不为'pd' 或 'pg' 时候的设置
 
         
       length:
         type: "continuous value"     # 参数类型：连续型标量 / Parameter type: continuous scalar
         names: 'l'                   # L 怎么弄暂时没想好，先全都用1个值
-        upper: 7.5e-8                                           # 参数范围上界（默认值的+50%）
-        lower: 2.5e-8                             # 参数范围下界（默认值的-50%）
-        default: 5e-8
+        upper: 1e-7                       
+        lower: 3e-8                
+        default: 50e-9
         description: "Transistor channel length / 晶体管沟道长度"
         
       nmos_model:
@@ -103,9 +103,9 @@ subcircuit:
       description: "Operation power consumption / 操作功耗"
       
     delay:
-      type: "continuous list"
-      names: ['read_delay', 'write_delay']
-      upper: [inf, inf]
+      type: "continuous list"              # 指标类型：
+      names: ['read_delay', 'write_delay']  
+      upper: [2e-10, 1e-10]                  
       lower: [0.0, 0.0]
       penalty: [1.0e6, 1.0e6]
       # source: "read.delay"                   # 仿真输出中的键名 / Key name in simulation output
@@ -125,7 +125,7 @@ subcircuit:
     composite_objective:
       enabled: true                          # 是否启用复合目标 / Enable composite objective
       type: "merit_function"                 # 复合函数类型：Merit函数 / Composite function type: merit function
-      formula: "log10(min_snm / (max_power * sqrt(area) * max_delay))"  # Merit函数公式 / Merit function formula
+      formula: "log10(min_snm / (max_power * sqrt(area)))"  # Merit函数公式 / Merit function formula
       description: "SRAM Merit function combining SNM, power and area / SRAM Merit函数，结合SNM、功耗和面积"
 
     

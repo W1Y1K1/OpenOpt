@@ -27,21 +27,25 @@ def Load_W(moead):
 
 
 def cpt_Z(moead):
-    """初始化参考点Z - 对于最小化问题初始化为一个大值"""
+    """初始化参考点Z(理想点)和Z_max(天底点) - 对于最小化问题"""
     Z = []
+    Z_max = []
     for fi in range(moead.problem.num_of_objectives):
-        z_i = 1e10
-        Z.append(z_i)
+        Z.append(1e10)
+        Z_max.append(-1e10)
     moead.Z = Z
+    moead.Z_max = Z_max
     return Z
 
 
 def update_Z(moead, individual):
-    """根据新个体更新参考点Z"""
+    """根据新个体更新参考点Z(理想点)和Z_max(天底点)"""
     objectives = individual.objectives
     for j in range(moead.problem.num_of_objectives):
         if objectives[j] < moead.Z[j]:
             moead.Z[j] = objectives[j]
+        if objectives[j] > moead.Z_max[j]:
+            moead.Z_max[j] = objectives[j]
 
 
 def cpt_W_Bi_T(moead):
@@ -57,19 +61,20 @@ def cpt_W_Bi_T(moead):
     print(f'计算邻域完成,每个个体{moead.T_size}个邻居')
 
 
-def Tchebycheff_dist(w, f, z):
-    """Tchebycheff距离"""
-    return w * abs(f - z)
 
 
 def cpt_tchbycheff(moead, idx, individual):
-    """计算Tchebycheff标量化函数值"""
+    """计算Tchebycheff标量化函数值 - 带目标归一化"""
     max_val = -1e10
     ri = moead.W[idx]
     F_X = individual.objectives
     
     for i in range(moead.problem.num_of_objectives):
-        fi = Tchebycheff_dist(ri[i], F_X[i], moead.Z[i])
+        # 归一化：除以各目标的动态范围 (Z_max - Z)
+        scale = moead.Z_max[i] - moead.Z[i]
+        if scale < 1e-20:
+            scale = 1.0  # 避免除零
+        fi = ri[i] * abs(F_X[i] - moead.Z[i]) / scale
         if fi > max_val:
             max_val = fi
     return max_val

@@ -5,14 +5,41 @@
 
 # global 参数配置
 # 仿真参数 / Simulation parameters
-vdd: 1.0                          # 供电电压(V) / Supply voltage (V)
-temperature: 45                   # 温度(摄氏度) / Temperature (Celsius)
-num_rows: 32                     # SRAM行数 / Number of SRAM rows
-num_cols: 16                      # SRAM列数 / Number of SRAM columns
-# num_rows: 4                       # SRAM行数 / Number of SRAM rows
-# num_cols: 4                       # SRAM列数 / Number of SRAM columns
-monte_carlo_runs: 30            # 蒙特卡洛仿真次数 / Monte Carlo simulation runs/设计参数有几行就改成几
-timeout: None                      # 仿真超时时间(秒) / Simulation timeout (seconds)
+vdd: 1.0                         # 供电电压(V) / Supply voltage (V)
+temperature: 25                   # 温度(摄氏度) / Temperature (Celsius)
+corner: "TT"                        # PDK工艺角 / PDK process corner/SS/FF/SF/FS
+sram_cell_type: "SRAM_6T_CELL"      # 可选: "SRAM_6T_CELL" / "SRAM_10T_CELL"
+TOTAL_capacity_KB: 32
+num_rows: 16                      # SRAM行数 / Number of SRAM rows
+num_cols: 16                        # SRAM列数 / Number of SRAM columns
+monte_carlo_runs: 1               # 蒙特卡洛仿真次数 / Monte Carlo simulation runs/设计参数有几行就改成几
+timeout: 120                      # 仿真超时时间(秒) / Simulation timeout (seconds)
+choose_columnmux: true              # 是否选择列复用器 / Whether to choose column mux
+# Driver sizing: lookup (default) selects fixed integer driver size classes from
+# sram_compiler/sizing/sizing_lookup.json by row and column class, the same
+# sizes for every cell candidate, PVT sample and RC configuration; unseen
+# sizes round up to the next class and sizes beyond the table extrapolate the
+# ladder (flagged, no evidence). Other modes: rules_only (the V2.0.5 continuous
+# rules the classes derive from; options parasitic_factor/wd_floor_margin/k_w/
+# pre_min) and auto (exact qualified-table match, otherwise rules_only). The
+# legacy fixed mode was removed in V2.0.9.
+sizing:
+  mode: lookup
+# Frozen array-class clock; SI seconds for a manual diagnostic override:
+# timing: {mode: fixed, t_period: 1.0e-8}
+timing:
+  mode: lookup
+# Equivalent array model (sram_compiler/equivalent_modeling/README.md).
+# 0 = full transistor array, the reference and the only mode whose per-device
+# mismatch covers every cell; 1 = cross (target row and column real), 2 = target
+# row, 3 = target column, 4 = target cell only. Modes 1-4 replace the remaining
+# cells with extracted loads, keep every physical wire, and are approximations:
+# never promote them to qualification evidence. `--real-cell-mode` and the
+# testbench argument override this default.
+equivalent:
+  mode: 0
+# Independent per-net signal RC settings and distinct VDD/VSS power meshes.
+interconnect: sram_compiler/config_yaml/interconnect_example.yaml
 pdk_path_TT: "tran_models/models_TT.spice" # PDK路径 / PDK path
 pdk_path_FF: "tran_models/models_FF.spice"
 pdk_path_SS: "tran_models/models_SS.spice"

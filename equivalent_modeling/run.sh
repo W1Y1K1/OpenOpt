@@ -1,1 +1,4 @@
-nohup bash -c 'export PYTHONIOENCODING=utf8 && /data1/wangyk/.conda/envs/openyield/bin/python -u "/data1/wangyk/OpenYield/equivalent_modeling/main_sram.py"' > equivalent_modeling/output.log 2>&1 &
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+exec python main_sram.py equivalent "$@"

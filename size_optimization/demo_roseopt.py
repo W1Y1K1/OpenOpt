@@ -34,10 +34,12 @@ sys.path.append(project_root)
 # 从exp_utils导入工具函数
 from size_optimization.exp_utils import (
     seed_set, create_directories, evaluate_sram, ModifiedSRAMParameterSpace,
-    OptimizationLogger, save_pareto_front, save_best_result, plot_merit_history,
-    plot_pareto_frontier, update_pareto_front, save_optimization_history,
-    get_default_normalized_vector, estimate_scaled_total_area
+    CompositeSRAMParameterSpace,
+    plot_merit_history,
+    plot_pareto_frontier, get_default_normalized_vector, estimate_scaled_total_area,
+    get_composite_initial_params,
 )
+from size_optimization.borl_model.ppo import PPO
 
 # Set device
 # 设置设备
@@ -46,26 +48,6 @@ device = torch.device("cpu")
 # Suppress warnings
 # 抑制警告
 warnings.filterwarnings('ignore')
-
-
-def format_initial_result(result):
-    """
-    Convert evaluate_sram result format to expected format
-    将evaluate_sram结果格式转换为期望格式
-    """
-    if result is None:
-        return None
-    
-    formatted_result = {
-        'hold_snm': {'success': True, 'snm': result['hold_snm']},
-        'read_snm': {'success': True, 'snm': result['read_snm']},
-        'write_snm': {'success': True, 'snm': result['write_snm']},
-        'read': {'success': True, 'delay': result['read_delay'], 
-                 'power': abs(result['read_power'])},
-        'write': {'success': True, 'delay': result['write_delay'], 
-                  'power': abs(result['write_power'])}
-    }
-    return formatted_result
 
 
 class Normalizer:
@@ -101,23 +83,6 @@ class Normalizer:
                 x = x_clipped
 
         return (x - self.low) / (self.high - self.low + 1e-6)
-
-    def denormalize(self, x_norm):
-        """
-        Convert normalized parameters (0-1) back to original range
-        将归一化参数（0-1）转换回原始范围
-        """
-        # Ensure normalized values are in 0-1 range
-        # 确保归一化值在0-1范围内
-        if isinstance(x_norm, np.ndarray):
-            x_norm_clipped = np.clip(x_norm, 0, 1)
-            if not np.array_equal(x_norm, x_norm_clipped):
-                x_norm = x_norm_clipped
-
-        # Perform denormalization
-        # 执行反归一化
-        return self.low + x_norm * (self.high - self.low)
-
 
 class SRAMCircuitEnv(gym.Env):
     """
@@ -199,63 +164,6 @@ class SRAMCircuitEnv(gym.Env):
         return state.astype(np.float32), reward, done, False, {}
 
 
-# Simple PPO implementation to avoid import issues
-# 简单的PPO实现以避免导入问题
-class SimplePPO:
-    """
-    Simplified PPO implementation
-    简化的PPO实现
-    """
-    
-    def __init__(self, state_dim, action_dim, lr_actor=3e-4, lr_critic=1e-3, 
-                 gamma=0.99, K_epochs=10, eps_clip=0.2, hidden_dim=64):
-        """
-        Initialize PPO
-        初始化PPO
-        """
-        self.lr_actor = lr_actor
-        self.lr_critic = lr_critic
-        self.gamma = gamma
-        self.eps_clip = eps_clip
-        self.K_epochs = K_epochs
-        
-        # Create simple networks
-        # 创建简单网络
-        self.actor = torch.nn.Sequential(
-            torch.nn.Linear(state_dim, hidden_dim),
-            torch.nn.ReLU(),
-            torch.nn.Linear(hidden_dim, hidden_dim),
-            torch.nn.ReLU(),
-            torch.nn.Linear(hidden_dim, action_dim),
-            torch.nn.Tanh()
-        )
-        
-        self.critic = torch.nn.Sequential(
-            torch.nn.Linear(state_dim, hidden_dim),
-            torch.nn.ReLU(),
-            torch.nn.Linear(hidden_dim, hidden_dim),
-            torch.nn.ReLU(),
-            torch.nn.Linear(hidden_dim, 1)
-        )
-        
-        # Initialize optimizers
-        # 初始化优化器
-        self.optimizer_actor = torch.optim.Adam(self.actor.parameters(), lr=lr_actor)
-        self.optimizer_critic = torch.optim.Adam(self.critic.parameters(), lr=lr_critic)
-        
-    def select_action(self, state):
-        """Select action"""
-        with torch.no_grad():
-            action = self.actor(state)
-        return action.cpu().numpy()
-    
-    def update(self, states, actions, rewards):
-        """Update PPO networks"""
-        # Simplified update (placeholder)
-        # 简化的更新（占位符）
-        pass
-
-
 class SRAM_BORL:
     """
     SRAM Bayesian Optimization with Reinforcement Learning (RoSE-Opt)
@@ -279,23 +187,18 @@ class SRAM_BORL:
         # 创建保存目录
         Path(save_dir).mkdir(parents=True, exist_ok=True)
 
-        # Initialize PPO agent: Use simplified PPO
-        # 初始化PPO智能体 - 修复：使用简化的PPO
-        state_dim = env.observation_space.shape[0]
-        action_dim = env.action_space.shape[0]
-        
-        # FIXED: Use SimplePPO instead of imported PPO
-        # 修复：使用SimplePPO而不是导入的PPO
-        self.ppo = SimplePPO(
-            state_dim=state_dim, 
-            action_dim=action_dim, 
-            lr_actor=lr,  # FIXED: correct parameter name
-            lr_critic=lr * 0.3,
+        state_dim = parameter_space.bounds.shape[1]
+        self.ppo = PPO(
+            state_spec_dim=state_dim,
+            action_dim=3,
+            hidden_dim=hidden_dim,
+            lr=lr,
+            betas=betas,
             gamma=gamma,
             K_epochs=K_epochs,
-            eps_clip=eps_clip,
-            hidden_dim=hidden_dim
+            eps_clip=eps_clip
         )
+        self.rl_step_size = 0.05
 
         # Data storage
         # 数据存储
@@ -382,11 +285,6 @@ class SRAM_BORL:
             # Generate random parameters
             # 生成随机参数
             x_normalized = np.random.uniform(0, 1, size=self.parameter_space.bounds.shape[1])
-            if i == 0:
-                default_x = get_default_normalized_vector(self.parameter_space)
-                if default_x:
-                    for j in range(min(len(default_x), x_normalized.size)):
-                        x_normalized[j] = default_x[j]
             X_train.append(x_normalized)
 
             # Convert to actual parameters
@@ -577,9 +475,14 @@ class SRAM_BORL:
                 print(f"\n===== RoSE-Opt iteration {total_iterations + 1} =====")
                 print(f"\n===== RoSE-Opt迭代 {total_iterations + 1} =====")
 
+                rl_state = torch.tensor(x_next_bo, dtype=torch.float32).unsqueeze(0)
+                rl_action = self.ppo.policy_old.act(rl_state).squeeze(0).cpu().numpy()
+                rl_delta = np.where(rl_action == 0, -self.rl_step_size, np.where(rl_action == 2, self.rl_step_size, 0.0))
+                x_next = np.clip(x_next_bo + rl_delta[:x_next_bo.shape[0]], 0, 1)
+
                 # Convert to actual parameters
                 # 转换为实际参数
-                x_tensor = torch.tensor(x_next_bo, dtype=torch.float32)
+                x_tensor = torch.tensor(x_next, dtype=torch.float32)
                 params = self.parameter_space.convert_params(x_tensor)
 
                 print("BO suggested parameters:")
@@ -598,10 +501,14 @@ class SRAM_BORL:
 
                     # Store data
                     # 存储数据
-                    self.X_data.append(x_next_bo)
+                    self.X_data.append(x_next)
                     self.Y_data.append(merit)
                     self.constraint_data.append(constraint_values)
                     self.results_data.append(result)
+                    self.ppo.policy_old.memory.rewards.append(float(merit))
+                    self.ppo.policy_old.memory.is_terminals.append(True)
+                    if len(self.ppo.policy_old.memory.rewards) >= 8:
+                        self.ppo.update(self.ppo.policy_old.memory)
 
                     print(f"Merit: {merit:.6e}")
                     print(f"SNM: Hold={result['hold_snm']:.6f}, Read={result['read_snm']:.6f}, Write={result['write_snm']:.6f}")
@@ -631,6 +538,10 @@ class SRAM_BORL:
                 else:
                     print("Simulation failed!")
                     print("仿真失败！")
+                    self.ppo.policy_old.memory.rewards.append(-10.0)
+                    self.ppo.policy_old.memory.is_terminals.append(True)
+                    if len(self.ppo.policy_old.memory.rewards) >= 8:
+                        self.ppo.update(self.ppo.policy_old.memory)
 
                 total_iterations += 1
 
@@ -722,23 +633,15 @@ def main(config_path="config_sram.yaml", problem=None, max_iter=400):  # 统一�
             parameter_space, eval_fn, _ = problem
         except Exception:
             # 兼容不规范的 problem 传参
-            parameter_space = ModifiedSRAMParameterSpace(config_path)
+            parameter_space = CompositeSRAMParameterSpace(config_path)
             eval_fn = evaluate_sram
     else:
-        parameter_space = ModifiedSRAMParameterSpace(config_path)
+        parameter_space = CompositeSRAMParameterSpace(config_path)
         eval_fn = evaluate_sram
 
-    # Define initial parameters (same as in main.py)
-    # 定义初始参数（与main.py中相同）
-    initial_params = {
-        'nmos_model_name': 'NMOS_VTG',
-        'pmos_model_name': 'PMOS_VTG',
-        'pd_width': 0.205e-6,
-        'pu_width': 0.09e-6,
-        'pg_width': 0.135e-6,
-        'length': 50e-9,
-        'length_nm': 50
-    }
+    # Define initial parameters (bitcell + peripheral circuits from YAML)
+    # 定义初始参数（从YAML获取bitcell + 外围电路参数）
+    initial_params = get_composite_initial_params()
 
     print("Running initial point simulation to get baseline performance...")
     print("运行初始点仿真以获得基准性能...")

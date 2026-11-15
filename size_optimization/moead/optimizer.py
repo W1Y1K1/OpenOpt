@@ -68,6 +68,12 @@ class MOEAD:
         cpt_W_Bi_T(self)
         Creat_Pop(self)
         cpt_Z(self)
+        
+        # 从初始种群更新Z(理想点)和Z_max(天底点)
+        from .utils import update_Z
+        for individual in self.Pop:
+            update_Z(self, individual)
+        
         init_EP(self)
         
         print('初始化完成!\n')

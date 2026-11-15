@@ -1,0 +1,13 @@
+# Optional circuit-backed optimization algorithms.
+-r requirements.txt
+torch>=2.2,<3
+scikit-learn>=1.4,<1.7
+botorch>=0.10,<0.14
+gpytorch>=1.11,<1.15
+ConfigSpace>=1.0,<2
+smac>=2.0,<3
+cma>=3.3,<5
+pymoo>=0.6.1,<0.7
+gymnasium>=0.29,<2
+tqdm>=4.66,<5
+tabpfn>=2.0,<8

@@ -1,114 +1,73 @@
-from sram_compiler.testbenches.sram_6t_core_testbench import Sram6TCoreTestbench  # type: ignore
-from sram_compiler.testbenches.sram_6t_core_MC_testbench import Sram6TCoreMcTestbench  # type: ignore
-from PySpice.Unit import u_V, u_ns, u_Ohm, u_pF, u_A, u_mA
-import numpy as np
-from utils import estimate_bitcell_area  # type: ignore
-from config import SRAM_CONFIG
-from datetime import datetime
-import os
+#!/usr/bin/env python3
+"""OpenOpt entrance for simulation, equivalent circuits and sizing optimization.
 
-if __name__ == "__main__":
-    # ================== 1. 加载所有配置 ==================
-    sram_config = SRAM_CONFIG()
-    sram_config.load_all_configs(global_file="sram_compiler/config_yaml/global.yaml", circuit_configs={"SRAM_6T_CELL": "sram_compiler/config_yaml/sram_6t_cell.yaml", "WORDLINEDRIVER": "sram_compiler/config_yaml/wordline_driver.yaml", "PRECHARGE": "sram_compiler/config_yaml/precharge.yaml", "COLUMNMUX": "sram_compiler/config_yaml/mux.yaml", "SENSEAMP": "sram_compiler/config_yaml/sa.yaml", "WRITEDRIVER": "sram_compiler/config_yaml/write_driver.yaml", "DECODER": "sram_compiler/config_yaml/decoder.yaml"})
+Edit the settings below or override them from the command line. Nominal
+simulation is the OpenOpt default. Run from the repository root:
 
-    # 2. 生成时间戳子目录
-    time_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-    sim_path = os.path.join("sim", f"{time_str}_mc_6t")  # 例如 sim/20250928_153045_mc_6t
-    os.makedirs(sim_path, exist_ok=True)
+    python main_sram.py --help
+    python main_sram.py simulate --rows 8 --cols 4 --no-run-xyce
+    python main_sram.py simulate --operation read --run-xyce
+    python main_sram.py equivalent --help
+    python main_sram.py experiment --dry-run
 
-    # FreePDK45 default transistor sizes
-    nmos_vals = sram_config.sram_6t_cell.nmos_width.value
-    if isinstance(nmos_vals, (list, tuple)):
-        pd_width = float(nmos_vals[0])
-        pg_width = float(nmos_vals[1])
-    else:
-        pd_width = float(nmos_vals)
-        pg_width = float(nmos_vals)
+Both settings-only runs and CLI simulations use one deck and result workflow.
+"""
+from __future__ import annotations
 
-    pmos_val = sram_config.sram_6t_cell.pmos_width.value
-    if isinstance(pmos_val, (list, tuple)):
-        pu_width = float(pmos_val[0])
-    else:
-        pu_width = float(pmos_val)
+import sys
+from pathlib import Path
+from typing import Any, List, Optional, Sequence
 
-    length_val = float(sram_config.sram_6t_cell.length.value)
-    area = estimate_bitcell_area(w_access=pg_width, w_pd=pd_width, w_pu=pu_width, l_transistor=length_val)
-    print(f"Estimated 6T SRAM Cell Area: {area*1e12:.2f} µm²")
+from sram_compiler.config_yaml.loader import configure, load_config
+from sram_compiler.experiments import dispatch
+# Preserve the script's Python helper API while sharing the implementation.
+from sram_compiler.experiments.simulation import bitcell_area, build_testbench, write_deck
+from sram_compiler.testbenches.sram_6t_core_MC_testbench import full_device_coverage
+from sram_compiler.variation import get_custom_vars, resolve_mc_runs
+from sram_compiler.version import VERSION
 
-    temperature = sram_config.global_config.temperature
-    num_rows = sram_config.global_config.num_rows
-    num_cols = sram_config.global_config.num_cols
-    num_mc = sram_config.global_config.monte_carlo_runs
+_PROJECT_ROOT = str(Path(__file__).resolve().parent)
 
-    print("===== 6T SRAM Array Monte Carlo Simulation Debug Session =====")
-    mc_testbench = Sram6TCoreMcTestbench(
-        sram_config,
-        w_rc=True,  # Whether add RC to nets
-        pi_res=100 @ u_Ohm,
-        pi_cap=0.001 @ u_pF,
-        vth_std=0.05,  # Process parameter variation is a percentage of its value in model lib
-        use_mc=True,
-        custom_mc=False,  # Use your own process params?
-        param_sweep=False,
-        sweep_precharge=False,
-        sweep_senseamp=False,
-        sweep_wordlinedriver=False,
-        sweep_columnmux=False,
-        sweep_writedriver=False,
-        sweep_decoder=False,
-        coner="TT",  # or FF or SS or FS or SF
-        choose_columnmux=False,
-        q_init_val=0,
-        sim_path=sim_path,
-        gen_unused_cells=False,
-    )
-    # vars = np.random.rand(num_mc,num_rows*num_cols*18)
+# ============================ Settings ============================
+# Array architecture: [num_rows, num_cols, choose_columnmux]
+ARRAY: List[Any] = [16, 16, True]
+CORNER = "TT"                   # PDK corner: TT / FF / SS / FS / SF
+# 6T cell, applied when global.yaml selects SRAM_6T_CELL (widths/length in metres):
+# [pd_width, pg_width, pu_width, length, pd_model, pg_model, pu_model]
+CELL_6T: List[Any] = [2.05e-7, 1.35e-7, 9.0e-8, 50.0e-9, "NMOS_VTG", "NMOS_VTG", "PMOS_VTG"]
+OPERATION = "write"             # read | write | read&write | hold_snm | read_snm | write_snm
+VARIATION_MODE = "nominal"      # nominal (default) | per-device | shared | custom
+MC_RUNS: Optional[int] = None   # None: YAML count for sampled modes; custom: table rows
+MC_SEED: Optional[int] = 20260711  # Xyce seed; None draws a new seed every run
+RUN_XYCE = True                 # False: generate the deck without simulating it
+# Equivalent array model; None keeps the `equivalent` block of global.yaml
+# (0: full transistor array, complete local coverage; 1-4: equivalent cells for
+# the unused array, an approximation). See sram_compiler/equivalent_modeling/.
+REAL_CELL_MODE: Optional[int] = None
+W_RC = True                     # Local storage/peripheral series RC (100 ohm / 1 fF)
+# Interconnect YAML mapping applied in memory (see docs/design/interconnect/DISTRIBUTED_RC_MODEL.md),
+# e.g. "sram_compiler/config_yaml/interconnect_example.yaml"; None keeps global.yaml's
+# `interconnect` settings (independent per-net RC for the qualified 8x8 reference;
+# separate illustrative route settings outside that scope).
+INTERCONNECT_CONFIG: Optional[str] = None
+TARGET: Optional[Sequence[int]] = None  # (row, col); None: last row, last column
+# ==================================================================
 
-    # For using DC analysis, operation can be 'write_snm' 'hold_snm' 'read_snm'
-    hold_snm = mc_testbench.run_mc_simulation(
-        operation="hold_snm",
-        target_row=num_rows - 1,
-        target_col=num_cols - 1,
-        mc_runs=num_mc,
-        vars=None,  # Input your data table
-    )
 
-    read_snm = mc_testbench.run_mc_simulation(
-        operation="read_snm",
-        target_row=num_rows - 1,
-        target_col=num_cols - 1,
-        mc_runs=num_mc,
-        vars=None,  # Input your data table
-    )
+def main(argv: Sequence[str] = ()) -> int:
+    """Apply script settings as defaults; explicit CLI options take precedence."""
+    rows, cols, column_mux = ARRAY
+    target_row, target_col = (None, None) if TARGET is None else TARGET
+    return dispatch.main(argv, simulation_defaults={
+        'rows': rows, 'cols': cols, 'column_mux': column_mux,
+        'corner': CORNER, 'cell_6t': CELL_6T, 'operation': OPERATION,
+        'variation_mode': VARIATION_MODE, 'mc_runs': MC_RUNS, 'seed': MC_SEED,
+        'run_xyce': RUN_XYCE, 'real_cell_mode': REAL_CELL_MODE, 'w_rc': W_RC,
+        'interconnect_config': INTERCONNECT_CONFIG,
+        'target_row': target_row, 'target_col': target_col,
+        'output_dir': Path(_PROJECT_ROOT) / 'outputs/main_sram',
+    })
 
-    write_snm = mc_testbench.run_mc_simulation(
-        operation="write_snm",
-        target_row=num_rows - 1,
-        target_col=num_cols - 1,
-        mc_runs=num_mc,
-        vars=None,  # Input your data table
-    )
 
-    # For using TRAN analysis, operation can be 'write' or 'read'
-    # r_delay, r_pavg, r_pstc, r_pdyn = mc_testbench.run_mc_simulation(
-    #     operation="read",
-    #     target_row=num_rows - 1,
-    #     target_col=num_cols - 1,
-    #     mc_runs=num_mc,
-    #     temperature=temperature,
-    #     vars=None,  # Input your data table
-    # )
-
-    # print(r_delay, r_pavg, r_pstc, r_pdyn)
-
-    # w_delay, w_pavg, w_pstc, w_pdyn = mc_testbench.run_mc_simulation(
-    #     operation="write",
-    #     target_row=num_rows - 1,
-    #     target_col=num_cols - 1,
-    #     mc_runs=num_mc,
-    #     temperature=temperature,
-    #     vars=None,  # Input your data table
-    # )
-
-    print("[DEBUG] Monte Carlo simulation completed")
+if __name__ == '__main__':
+    raise SystemExit(main(sys.argv[1:]))

@@ -1,0 +1,443 @@
+{
+  "schema": 2,
+  "version": "V2.2.9",
+  "lookup_version": "v2.2.9-layout-area-self-timed-1",
+  "units": "integer picoseconds before margin",
+  "status": "V2.2.9 area-constrained finite screen: measured32 anchor and conditional larger-array estimates; not release qualification",
+  "supported_envelope": {
+    "max_rows": 512,
+    "max_cols": 256
+  },
+  "basis": "V2.2.8 layout timing: the shared table v2.2.3-timing-1 with one change. The 6T column-mux 64-row budget rises from 4000 to 4300 ps, so a 64x64 compact macro runs at 12.0 ns instead of 10.5 ns: its extracted SS read missed the 0.68 T deadline by 153 ps at 10.5 ns and passes at 12 ns (docs/design/layout/POST_LAYOUT_V2_2_8.md). Every other budget is unchanged. Shared-table basis: V2.2.0 separates clock-high access from clock-low recovery. Most budgets are twice V2.1.10. The 128-, 256-, and 512-row budgets are three times V2.1.10 to cover the decoder-settling guard. V2.2.3 declares the supported envelope as 512 rows by 256 columns and removes the 512-column class, which is outside it; the 8x512 cases of the V2.2.2 screen are historical evidence and are no longer resolvable from this table. No budget inside the envelope changed, so every array size screened in V2.2.2 within the envelope resolves to the identical period. See docs/design/timing/PHASED_CONTROL_V2_2_3.md for the executed screening and limits. V2.2.4 changes no budget: a variant ladder is floored at the shared ladder for every size (the floor V2.2.3 removed), so every V2.2.3 period is unchanged.",
+  "policy": "T = ceil_to_50ps(2 * half * (1 + margin)); default margin 0.25, where half = max(row.half_period_ps, column.half_period_ps) + min(row_excess, column_excess) and each excess is that ladder's budget minus the budget of its own first class. An array large in one dimension pays the larger single-dimension budget; an array large in both also pays the smaller excess, because bitline height and wordline width contribute separately. When either dimension sits in its first class the excess is zero and the rule is the V2.2.x maximum. Rows above max_rows or columns above max_cols of supported_envelope are rejected, not extrapolated. Round dimensions up to anchors. The shared classes apply to every architecture without a variant entry; a variant keyed by cell_type (and mux, when given) replaces both ladders for that architecture and may never fall below the shared budget, at its own first class too. Physical wiring still shares the classes; custom RC still requires waveform checks.",
+  "row_classes": [
+    {
+      "max_rows": 32,
+      "half_period_ps": 3600
+    },
+    {
+      "max_rows": 64,
+      "half_period_ps": 3800
+    },
+    {
+      "max_rows": 128,
+      "half_period_ps": 6600
+    },
+    {
+      "max_rows": 256,
+      "half_period_ps": 8100
+    },
+    {
+      "max_rows": 512,
+      "half_period_ps": 11100
+    }
+  ],
+  "column_classes": [
+    {
+      "max_cols": 4,
+      "half_period_ps": 3200
+    },
+    {
+      "max_cols": 8,
+      "half_period_ps": 3200
+    },
+    {
+      "max_cols": 16,
+      "half_period_ps": 3200
+    },
+    {
+      "max_cols": 32,
+      "half_period_ps": 3600
+    },
+    {
+      "max_cols": 64,
+      "half_period_ps": 4000
+    },
+    {
+      "max_cols": 128,
+      "half_period_ps": 4800
+    },
+    {
+      "max_cols": 256,
+      "half_period_ps": 5600
+    }
+  ],
+  "variants": [
+    {
+      "cell_type": "SRAM_10T_CELL",
+      "basis": "V2.2.0 high access and low recovery: twice the V2.1.10 budgets except for taller row classes. V2.2.3 removed the 512-column class, which is outside the supported envelope.",
+      "row_classes": [
+        {
+          "max_rows": 32,
+          "half_period_ps": 4000
+        },
+        {
+          "max_rows": 64,
+          "half_period_ps": 4400
+        },
+        {
+          "max_rows": 128,
+          "half_period_ps": 7200
+        },
+        {
+          "max_rows": 256,
+          "half_period_ps": 9600
+        },
+        {
+          "max_rows": 512,
+          "half_period_ps": 12900
+        }
+      ],
+      "column_classes": [
+        {
+          "max_cols": 4,
+          "half_period_ps": 3600
+        },
+        {
+          "max_cols": 8,
+          "half_period_ps": 3600
+        },
+        {
+          "max_cols": 16,
+          "half_period_ps": 3600
+        },
+        {
+          "max_cols": 32,
+          "half_period_ps": 4000
+        },
+        {
+          "max_cols": 64,
+          "half_period_ps": 4400
+        },
+        {
+          "max_cols": 128,
+          "half_period_ps": 5200
+        },
+        {
+          "max_cols": 256,
+          "half_period_ps": 6000
+        }
+      ]
+    },
+    {
+      "cell_type": "SRAM_6T_CELL",
+      "mux": true,
+      "basis": "V2.2.0 high access and low recovery: twice the V2.1.10 budgets except for taller row classes. V2.2.3 removed the 512-column class, which is outside the supported envelope.",
+      "row_classes": [
+        {
+          "max_rows": 32,
+          "half_period_ps": 3800
+        },
+        {
+          "max_rows": 64,
+          "half_period_ps": 4300
+        },
+        {
+          "max_rows": 128,
+          "half_period_ps": 6900
+        },
+        {
+          "max_rows": 256,
+          "half_period_ps": 8700
+        },
+        {
+          "max_rows": 512,
+          "half_period_ps": 12000
+        }
+      ],
+      "column_classes": [
+        {
+          "max_cols": 4,
+          "half_period_ps": 3200
+        },
+        {
+          "max_cols": 8,
+          "half_period_ps": 3200
+        },
+        {
+          "max_cols": 16,
+          "half_period_ps": 3200
+        },
+        {
+          "max_cols": 32,
+          "half_period_ps": 3600
+        },
+        {
+          "max_cols": 64,
+          "half_period_ps": 4000
+        },
+        {
+          "max_cols": 128,
+          "half_period_ps": 4800
+        },
+        {
+          "max_cols": 256,
+          "half_period_ps": 5600
+        }
+      ]
+    }
+  ],
+  "self_timed": {
+    "cell_type": "SRAM_6T_CELL",
+    "mux": true,
+    "compact_control": true,
+    "control_architecture": "v2.2.9-self-timed-completion-1",
+    "margin": 0.1,
+    "policy": "Round dimensions up, select explicit joint class; ceil each budget*(1+margin) to50ps. Legacy entries retain their original phase policy.",
+    "baseline": {
+      "sizing_lookup_sha256": "792454146c1c9910c36993d827a14255b02772db20a045fabae9cc8131c8f00f",
+      "peripheral_key": "5447c9efce1e8adb5918624ff3704c7e81d425acaf33bb1204908ae3f1bf587d",
+      "pdk_key": "8a3b1a6de16a2f3855a0b8eb189c2892942d158b6c848dbf82cbbdb48b2af7b5",
+      "physical_keys": [
+        "0431ed4e9d16e9bb08dabfbdda628c0b7013a0617d882c6baa9a06583c9b9c82",
+        "0d3e813206d19f46af39a2a7f1b3b6e41375d4338180f233f7a5a927708f0ae2",
+        "150ce28ffa4e8110376b0ed3fb58757173562d2f4cabc8b8a8dda2d6813cfece",
+        "6e4d56d4c94f70f69546a9fbc9b9c204764ca140400ac3e33bcd445159eb05da",
+        "7a4d9ff3fd2250fb08d15bc3761ada54292b4f86e2f92584e30920b773b9f143",
+        "7d198d69973b499750671a32cedaa05d2bec39f2f918ae6d25a99ba2de7933d1",
+        "84742cf98b06f5a5fc3543236c6642e954a8416c9bb949616e8bbf47cb1fbfb8",
+        "cabb0bd9b10dd4cbcdaa1c9ebfbe5842392071b9cfd536696406317033cfde0c",
+        "cb6bf03d811c508ae8713585cf5f1170baa91902ff7e53eb368e83c9ce7c28a5",
+        "da162acce5e4572349b21ca5d0e28bfe20286d132ce18ac93056f08f7b7f906c"
+      ],
+      "sizing_policy_key": "d05341fdfcd40e94dadd37985981679eb61cd8ca62383394ec641435f8d4a5d0"
+    },
+    "physical_scope": "Stock illustrative distributed geometry/local stubs; equivalent1-4 share reference clocks but remain approximations. Compact post-layout claims refer to the recorded extracted macro only.",
+    "estimation_source": "outputs/area_speedup/final_retiming_model.json",
+    "estimation_sha256": "ccc7a067254fa5c4d10d0e32b69e636c0074ec74d686249d60963e148aa5ae93",
+    "joint_classes": [
+      {
+        "max_rows": 32,
+        "max_cols": 32,
+        "access_ps": 3693,
+        "cycle_ps": 6232,
+        "evidence_status": "postlayout"
+      },
+      {
+        "max_rows": 32,
+        "max_cols": 64,
+        "access_ps": 4957,
+        "cycle_ps": 9624,
+        "evidence_status": "extrapolated"
+      },
+      {
+        "max_rows": 32,
+        "max_cols": 128,
+        "access_ps": 6718,
+        "cycle_ps": 14029,
+        "evidence_status": "extrapolated"
+      },
+      {
+        "max_rows": 32,
+        "max_cols": 256,
+        "access_ps": 10991,
+        "cycle_ps": 23785,
+        "evidence_status": "extrapolated"
+      },
+      {
+        "max_rows": 64,
+        "max_cols": 32,
+        "access_ps": 5011,
+        "cycle_ps": 8641,
+        "evidence_status": "extrapolated"
+      },
+      {
+        "max_rows": 64,
+        "max_cols": 64,
+        "access_ps": 5454,
+        "cycle_ps": 9624,
+        "evidence_status": "extrapolated"
+      },
+      {
+        "max_rows": 64,
+        "max_cols": 128,
+        "access_ps": 7066,
+        "cycle_ps": 14087,
+        "evidence_status": "extrapolated"
+      },
+      {
+        "max_rows": 64,
+        "max_cols": 256,
+        "access_ps": 11338,
+        "cycle_ps": 23844,
+        "evidence_status": "extrapolated"
+      },
+      {
+        "max_rows": 128,
+        "max_cols": 32,
+        "access_ps": 7107,
+        "cycle_ps": 11550,
+        "evidence_status": "extrapolated"
+      },
+      {
+        "max_rows": 128,
+        "max_cols": 64,
+        "access_ps": 7369,
+        "cycle_ps": 11906,
+        "evidence_status": "extrapolated"
+      },
+      {
+        "max_rows": 128,
+        "max_cols": 128,
+        "access_ps": 8459,
+        "cycle_ps": 14392,
+        "evidence_status": "extrapolated"
+      },
+      {
+        "max_rows": 128,
+        "max_cols": 256,
+        "access_ps": 11920,
+        "cycle_ps": 23973,
+        "evidence_status": "extrapolated"
+      },
+      {
+        "max_rows": 256,
+        "max_cols": 32,
+        "access_ps": 9549,
+        "cycle_ps": 15099,
+        "evidence_status": "extrapolated"
+      },
+      {
+        "max_rows": 256,
+        "max_cols": 64,
+        "access_ps": 9811,
+        "cycle_ps": 15361,
+        "evidence_status": "extrapolated"
+      },
+      {
+        "max_rows": 256,
+        "max_cols": 128,
+        "access_ps": 10611,
+        "cycle_ps": 17023,
+        "evidence_status": "extrapolated"
+      },
+      {
+        "max_rows": 256,
+        "max_cols": 256,
+        "access_ps": 13437,
+        "cycle_ps": 24522,
+        "evidence_status": "extrapolated"
+      },
+      {
+        "max_rows": 512,
+        "max_cols": 32,
+        "access_ps": 14808,
+        "cycle_ps": 22949,
+        "evidence_status": "extrapolated"
+      },
+      {
+        "max_rows": 512,
+        "max_cols": 64,
+        "access_ps": 15070,
+        "cycle_ps": 23211,
+        "evidence_status": "extrapolated"
+      },
+      {
+        "max_rows": 512,
+        "max_cols": 128,
+        "access_ps": 15870,
+        "cycle_ps": 24011,
+        "evidence_status": "extrapolated"
+      },
+      {
+        "max_rows": 512,
+        "max_cols": 256,
+        "access_ps": 17419,
+        "cycle_ps": 27330,
+        "evidence_status": "extrapolated"
+      }
+    ],
+    "row_classes": [
+      {
+        "max_rows": 32,
+        "access_ps": 3693,
+        "cycle_ps": 6232,
+        "evidence_status": "postlayout"
+      },
+      {
+        "max_rows": 64,
+        "access_ps": 5011,
+        "cycle_ps": 8641,
+        "evidence_status": "extrapolated"
+      },
+      {
+        "max_rows": 128,
+        "access_ps": 7107,
+        "cycle_ps": 11550,
+        "evidence_status": "extrapolated"
+      },
+      {
+        "max_rows": 256,
+        "access_ps": 9549,
+        "cycle_ps": 15099,
+        "evidence_status": "extrapolated"
+      },
+      {
+        "max_rows": 512,
+        "access_ps": 14808,
+        "cycle_ps": 22949,
+        "evidence_status": "extrapolated"
+      }
+    ],
+    "column_classes": [
+      {
+        "max_cols": 32,
+        "access_ps": 3693,
+        "cycle_ps": 6232,
+        "evidence_status": "postlayout"
+      },
+      {
+        "max_cols": 64,
+        "access_ps": 4957,
+        "cycle_ps": 9624,
+        "evidence_status": "extrapolated"
+      },
+      {
+        "max_cols": 128,
+        "access_ps": 6718,
+        "cycle_ps": 14029,
+        "evidence_status": "extrapolated"
+      },
+      {
+        "max_cols": 256,
+        "access_ps": 10991,
+        "cycle_ps": 23785,
+        "evidence_status": "extrapolated"
+      }
+    ],
+    "measured_anchor_source": "outputs/area_speedup/physical32_v4_report.json",
+    "measured_anchor_sha256": "dc457e09b6ac91a00dc9e5ce92ee28cc08d6c73742907135acae60bf1a4f3da8"
+  },
+  "integration_evidence": {
+    "assumptions": [
+      "Setup26\u219228 and56\u219260 are charged before read admission; write setup costs can remain hidden behind unchanged longer WEN/ISO guards. Raised setup-reset floors are recomputed against recovery, never silently omitted.",
+      "The class-sized enable-off affine correction repairs an earlier short-default overhead assumption; it is reported separately from v4 changes.",
+      "Read/write completion margins use the prior explicit1.5,25%/40% uncertainty,1.10 timing mismatch and20% lower-delay assumptions; no lower-bound improvement is claimed from later setup.",
+      "All predecessor floors use unchanged rectangular classes and already-updated square predecessors. No unlisted budget is changed; upper-neighbor violations are reported, not silently repaired.",
+      "Peripheral conditional assumptions remain unchanged. The separately bounded PRE credit assumes the old additive PRE-tail model, not proven parallel PRE dominance. No independent metal strap gain is used.",
+      "The measured32 budget includes the final PRE-off6 circuit. Its finite-sample adjustment is separate from the larger-array1.10 mismatch reserve.",
+      "All thirteen final nominal32 traces and fourteen updated-bar scores bind the lower/upper completion transfer. Larger-array geometry, supply noise and actual data differential remain conditional; no direct large-array transient qualification."
+    ],
+    "family": "common_wen_and_separable_pre",
+    "measured32": {
+      "budget_ps": {
+        "access_ps": 3693,
+        "cycle_ps": 6232
+      },
+      "deadline_ps": 4100,
+      "finite_sample": "One physical 5% per-device SS seed 20261106; ratios are observed finite-sample factors, not statistical yield bounds.",
+      "margin": "A single 10% clock/deadline margin and upward 50ps rounding; larger-array 1.10 mismatch reserve is separate.",
+      "matched_mc_ratios": {
+        "access_ps": 1.017274528986872,
+        "cycle_ps": 1.017642401583597
+      },
+      "nominal_maxima_ps": {
+        "access_ps": 3629.882251081512,
+        "cycle_ps": 6123.1681828843575
+      },
+      "period_ps": 6900,
+      "vsys_v": 0.057213321617768584
+    },
+    "model_sha256": "ccc7a067254fa5c4d10d0e32b69e636c0074ec74d686249d60963e148aa5ae93"
+  }
+}

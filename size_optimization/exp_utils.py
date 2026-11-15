@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 SRAM Circuit Optimization Utilities
 SRAM电路优化工具函数
@@ -8,13 +10,16 @@ This file contains common utilities for SRAM circuit optimization algorithms.
 
 import numpy as np
 import os
-import torch
+try:
+    import torch
+except ImportError:
+    torch = None
 import random
 import time
-import csv
-import json
 import traceback
 import yaml
+import hashlib
+from functools import lru_cache
 from pathlib import Path
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
@@ -26,7 +31,10 @@ from config import SRAM_CONFIG
 # 导入SRAM仿真模块
 from PySpice.Unit import u_V, u_ns, u_Ohm, u_pF, u_A, u_mA
 from sram_compiler.testbenches.sram_6t_core_MC_testbench import Sram6TCoreMcTestbench
-from utils import estimate_bitcell_area, estimate_total_area
+from sram_compiler.sizing import resolve_driver_sizes, resolve_timing
+from sram_compiler.sizing.table import physical_context
+from utils import estimate_bitcell_area, estimate_total_area, estimate_array_area, estimate_scaled_array_area
+from utils.plotting import plot_merit_history, plot_pareto_frontier
 
 
 def seed_set(seed):
@@ -63,16 +71,25 @@ def get_default_initial_params():
     Get default initial parameters for SRAM optimization
     获取SRAM优化的默认初始参数
     """
-    length = 70e-9
-    return {"nmos_model_name": "NMOS_VTG", "pmos_model_name": "PMOS_VTG", "pd_width": 0.205e-6, "pu_width": 0.09e-6, "pg_width": 0.135e-6, "length": length, "length_nm": length * 1e9}
+    length = 50e-9
+    return {
+        "pd_model_name": "NMOS_VTG",
+        "pg_model_name": "NMOS_VTG",
+        "nmos_model_name": "NMOS_VTG",  # legacy alias
+        "pmos_model_name": "PMOS_VTG",
+        "pd_width": 0.205e-6,
+        "pu_width": 0.09e-6,
+        "pg_width": 0.135e-6,
+        "length": length,
+        "length_nm": length * 1e9,
+    }
 
 
-def get_params_from_yaml():
+def _load_sram_config_from_yaml():
     """
-    Load transistor parameters from SRAM YAML config so scripts honor YAML edits
-    从 SRAM 的 YAML 配置中加载晶体管参数，使脚本遵循 YAML 修改
+    Load full SRAM_CONFIG from YAML files.
+    从 YAML 文件加载完整 SRAM_CONFIG。
     """
-    # Determine project root
     current_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(current_dir)
 
@@ -89,6 +106,15 @@ def get_params_from_yaml():
             "DECODER": os.path.join(project_root, "sram_compiler/config_yaml/decoder.yaml"),
         },
     )
+    return sram_config
+
+
+def get_params_from_yaml():
+    """
+    Load transistor parameters from SRAM YAML config so scripts honor YAML edits
+    从 SRAM 的 YAML 配置中加载晶体管参数，使脚本遵循 YAML 修改
+    """
+    sram_config = _load_sram_config_from_yaml()
 
     # Extract values from loaded config
     pu_val = float(getattr(sram_config.sram_6t_cell.pmos_width, "value", 0.0))
@@ -104,12 +130,16 @@ def get_params_from_yaml():
     pmos_model_val = getattr(sram_config.sram_6t_cell.pmos_model, "value", "PMOS_VTG")
     nmos_model_val = getattr(sram_config.sram_6t_cell.nmos_model, "value", "NMOS_VTG")
     if isinstance(nmos_model_val, (list, tuple)):
-        nmos_model_name = str(nmos_model_val[0])
+        pd_model_name = str(nmos_model_val[0]) if nmos_model_val else "NMOS_VTG"
+        pg_model_name = str(nmos_model_val[1]) if len(nmos_model_val) > 1 else pd_model_name
     else:
-        nmos_model_name = str(nmos_model_val)
+        pd_model_name = str(nmos_model_val)
+        pg_model_name = pd_model_name
 
     return {
-        "nmos_model_name": nmos_model_name,
+        "pd_model_name": pd_model_name,
+        "pg_model_name": pg_model_name,
+        "nmos_model_name": pd_model_name,  # legacy alias
         "pmos_model_name": str(pmos_model_val),
         "pd_width": pd_val,
         "pg_width": pg_val,
@@ -119,23 +149,103 @@ def get_params_from_yaml():
     }
 
 
-def estimate_scaled_total_area(params, num_rows=32, num_cols=1, num_arrays=1):
-    default_params = get_params_from_yaml()
-    default_bitcell_area = estimate_bitcell_area(
-        w_access=default_params["pg_width"],
-        w_pd=default_params["pd_width"],
-        w_pu=default_params["pu_width"],
-        l_transistor=default_params["length"],
-    )
-    current_bitcell_area = estimate_bitcell_area(
+def get_peripheral_params_from_yaml():
+    """
+    Load peripheral circuit parameters from YAML configs.
+    从 YAML 配置加载外围电路参数（column mux, sense amp, wordline driver）。
+    """
+    sram_config = _load_sram_config_from_yaml()
+    params = {}
+
+    # --- Column Mux ---
+    mux = sram_config.column_mux
+    params["mux_p_width"] = float(getattr(mux.pmos_width, "value", 0.135e-6))
+    params["mux_n_width"] = float(getattr(mux.nmos_width, "value", 0.135e-6))
+    params["mux_length"] = float(getattr(mux.length, "value", 50e-9))
+    params["mux_p_model"] = str(getattr(mux.pmos_model, "value", "PMOS_VTG"))
+    params["mux_n_model"] = str(getattr(mux.nmos_model, "value", "NMOS_VTG"))
+
+    # --- Sense Amp ---
+    sa = sram_config.senseamp
+    params["sa_p_width"] = float(getattr(sa.pmos_width, "value", 0.54e-6))
+    params["sa_n_width"] = float(getattr(sa.nmos_width, "value", 0.27e-6))
+    params["sa_length"] = float(getattr(sa.length, "value", 50e-9))
+    params["sa_p_model"] = str(getattr(sa.pmos_model, "value", "PMOS_VTG"))
+    params["sa_n_model"] = str(getattr(sa.nmos_model, "value", "NMOS_VTG"))
+
+    # --- Wordline Driver ---
+    wld = sram_config.wordline_driver
+    wld_pmos_vals = getattr(wld.pmos_width, "value", [0.27e-6, 0.27e-6])
+    if isinstance(wld_pmos_vals, (list, tuple)):
+        params["wld_nand_p_width"] = float(wld_pmos_vals[0])
+        params["wld_inv_p_width"] = float(wld_pmos_vals[1])
+    else:
+        params["wld_nand_p_width"] = float(wld_pmos_vals)
+        params["wld_inv_p_width"] = float(wld_pmos_vals)
+
+    wld_nmos_vals = getattr(wld.nmos_width, "value", [0.18e-6, 0.09e-6])
+    if isinstance(wld_nmos_vals, (list, tuple)):
+        params["wld_nand_n_width"] = float(wld_nmos_vals[0])
+        params["wld_inv_n_width"] = float(wld_nmos_vals[1])
+    else:
+        params["wld_nand_n_width"] = float(wld_nmos_vals)
+        params["wld_inv_n_width"] = float(wld_nmos_vals)
+
+    params["wld_length"] = float(getattr(wld.length, "value", 50e-9))
+
+    wld_pmos_model_vals = getattr(wld.pmos_model, "value", ["PMOS_VTG", "PMOS_VTG"])
+    if isinstance(wld_pmos_model_vals, (list, tuple)):
+        params["wld_nand_p_model"] = str(wld_pmos_model_vals[0])
+        params["wld_inv_p_model"] = str(wld_pmos_model_vals[1])
+    else:
+        params["wld_nand_p_model"] = str(wld_pmos_model_vals)
+        params["wld_inv_p_model"] = str(wld_pmos_model_vals)
+
+    wld_nmos_model_vals = getattr(wld.nmos_model, "value", ["NMOS_VTG", "NMOS_VTG"])
+    if isinstance(wld_nmos_model_vals, (list, tuple)):
+        params["wld_nand_n_model"] = str(wld_nmos_model_vals[0])
+        params["wld_inv_n_model"] = str(wld_nmos_model_vals[1])
+    else:
+        params["wld_nand_n_model"] = str(wld_nmos_model_vals)
+        params["wld_inv_n_model"] = str(wld_nmos_model_vals)
+
+    return params
+
+
+def get_composite_initial_params():
+    """
+    Get full initial parameter dict (bitcell + peripheral circuits) from YAML.
+    从 YAML 获取完整初始参数字典（bitcell + 外围电路）。
+    """
+    bc = get_params_from_yaml()
+    periph = get_peripheral_params_from_yaml()
+    bc.update(periph)
+    return bc
+
+
+def estimate_scaled_total_area(params, num_rows=32, num_cols=1, num_arrays=1, driver_sizes=None):
+    """Pitch-scaling area model: 列/行间距随 bitcell 尺寸缩放，外围电路随 SA/WLD/Precharge 宽度缩放。返回 m²。"""
+    sa_max_w  = max(params.get("sa_p_width", 0.54e-6),
+                    params.get("sa_n_width", 0.27e-6))
+    wld_max_w = max(params.get("wld_nand_p_width", 0.27e-6),
+                    params.get("wld_inv_p_width",  0.27e-6),
+                    params.get("wld_nand_n_width", 0.18e-6),
+                    params.get("wld_inv_n_width",  0.09e-6))
+    prc_max_w = params.get("prc_p_width", 0.27e-6)
+    if driver_sizes is not None:
+        wld_max_w = driver_sizes.area_wordline_width
+        prc_max_w = driver_sizes.area_precharge_width
+        sa_max_w = driver_sizes.area_senseamp_width
+    return estimate_scaled_array_area(
+        num_rows, num_cols, num_arrays,
         w_access=params["pg_width"],
         w_pd=params["pd_width"],
         w_pu=params["pu_width"],
         l_transistor=params["length"],
+        sa_max_width=sa_max_w,
+        wld_max_width=wld_max_w,
+        prc_max_width=prc_max_w,
     )
-    base_array_area = estimate_total_area(num_rows, num_cols, num_arrays)
-    scale_factor = current_bitcell_area / default_bitcell_area if default_bitcell_area > 0 else 1.0
-    return base_array_area * scale_factor
 
 
 def get_default_normalized_vector(parameter_space, rows=16, cols=16):
@@ -192,14 +302,14 @@ def get_default_normalized_vector(parameter_space, rows=16, cols=16):
     return x
 
 
-def get_default_transistor_features(parameter_space):
+def get_default_transistor_features(parameter_space, split_nmos=False):
     base_space = parameter_space.base_space if hasattr(parameter_space, "base_space") else parameter_space
     default_vector = get_default_normalized_vector(base_space)
     default_vector = list(default_vector) if default_vector else []
     while len(default_vector) < 4:
         default_vector.append(0.0)
 
-    nmos_idx = 0
+    nmos_indices = [0, 0]
     pmos_idx = 0
     dim_idx = 0
     if hasattr(base_space, "param_info"):
@@ -211,16 +321,28 @@ def get_default_transistor_features(parameter_space):
             elif info["type"] == "categorical_list":
                 choices = info.get("choices", [])
                 if param_name == "nmos_model":
-                    if choices and dim_idx < len(default_vector):
-                        idx = int(default_vector[dim_idx] * len(choices))
-                        nmos_idx = max(0, min(idx, len(choices) - 1))
+                    for i in range(min(info["count"], 2)):
+                        if choices and dim_idx + i < len(default_vector):
+                            idx = int(default_vector[dim_idx + i] * len(choices))
+                            nmos_indices[i] = max(0, min(idx, len(choices) - 1))
                 if param_name == "pmos_model":
                     if choices and dim_idx < len(default_vector):
                         idx = int(default_vector[dim_idx] * len(choices))
                         pmos_idx = max(0, min(idx, len(choices) - 1))
                 dim_idx += info["count"]
 
-    return default_vector[:4], nmos_idx, pmos_idx
+    if split_nmos:
+        return default_vector[:4], nmos_indices[0], nmos_indices[1], pmos_idx
+    return default_vector[:4], nmos_indices[0], pmos_idx
+
+
+def categorical_index_to_normalized(index: Union[int, float], choices: Union[int, List[Any], Tuple[Any, ...]]) -> float:
+    """Map an integer categorical index to the normalized value expected by convert_params."""
+    count = choices if isinstance(choices, int) else len(choices)
+    if count <= 0:
+        return 0.0
+    idx = max(0, min(int(round(float(index))), count - 1))
+    return (idx + 0.5) / count
 
 
 def get_default_fallback_result():
@@ -258,24 +380,18 @@ class ConfigLoader:
         初始化配置加载器
         Initialize configuration loader
         """
-        resolved_path = Path(config_path)
-        if not resolved_path.is_absolute():
-            resolved_path = Path(__file__).resolve().parent / config_path
-        self.config_path = str(resolved_path)
+        self.config_path = (
+            Path(__file__).resolve().with_name(config_path)
+            if config_path == "config_sram.yaml"
+            else config_path
+        )
         self.config = self._load_config()
 
     def _load_config(self) -> Dict:
         """加载YAML配置文件"""
         try:
             with open(self.config_path, "r", encoding="utf-8") as f:
-                config = yaml.safe_load(f) or {}
-            pdk_path = config.get("pdk", {}).get("path")
-            if pdk_path:
-                project_root = Path(__file__).resolve().parent.parent
-                path = Path(pdk_path)
-                if not path.is_absolute():
-                    config.setdefault("pdk", {})["path"] = str(project_root / path)
-            return config
+                return yaml.safe_load(f)
         except FileNotFoundError:
             print(f"Warning: 配置文件 {self.config_path} 不存在，使用默认配置")
             return self._get_default_config()
@@ -286,10 +402,6 @@ class ConfigLoader:
     def _get_default_config(self) -> Dict:
         """获取默认配置"""
         return {"sim_params": {"vdd": 1.0, "temperature": 27, "num_rows": 32, "num_cols": 1, "monte_carlo_runs": 1, "timeout": 120}, "pdk": {"path": "tran_models/models_TT.spice"}, "subcircuit": {"name": "SRAM_6T_Cell", "parameter_space": {"parameters": {"pmos_width": {"type": "continuous list", "names": ["pu"], "upper": [1.35e-7], "lower": [4.5e-8], "default": [9e-8]}, "nmos_width": {"type": "continuous list", "names": ["pd", "pg"], "upper": [3.075e-7, 2.025e-7], "lower": [1.025e-7, 6.75e-8], "default": [2.05e-7, 1.35e-7]}, "length": {"type": "continuous value", "names": "l", "upper": 1e-7, "lower": 3e-8, "default": 50e-9}, "nmos_model": {"type": "categorical list", "names": ["pd", "pg"], "choices": ["NMOS_VTL", "NMOS_VTG", "NMOS_VTH"], "default": ["NMOS_VTG", "NMOS_VTG"]}, "pmos_model": {"type": "categorical list", "names": ["pu"], "choices": ["PMOS_VTL", "PMOS_VTG", "PMOS_VTH"], "default": ["PMOS_VTG"]}}}}}
-
-    def get_global_params(self) -> Dict:
-        """获取全局参数"""
-        return {"sim_params": self.config.get("sim_params", {}), "pdk": self.config.get("pdk", {})}
 
     def get_subcircuit_config(self) -> Dict:
         """获取子电路配置"""
@@ -383,6 +495,27 @@ class ModifiedSRAMParameterSpace:
         else:
             pd_default, pg_default = 2.05e-7, 1.35e-7
 
+        if pmos_width_config:
+            pmos_defaults = pmos_width_config["default"]
+            if isinstance(pmos_defaults, (list, tuple)):
+                pu_default = pmos_defaults[0] if pmos_defaults else 9e-8
+            else:
+                pu_default = float(pmos_defaults)
+        else:
+            pu_default = 9e-8
+
+        if length_config:
+            length_default = length_config["default"]
+            if isinstance(length_default, (list, tuple)):
+                length_default = length_default[0]
+        else:
+            length_default = 50e-9
+
+        self.base_pd_width = pd_default
+        self.base_pu_width = pu_default
+        self.base_pg_width = pg_default
+        self.base_length_nm = float(length_default) * 1e9
+
     def get_physical_bounds(self) -> List:
         nmos_width_config = self.param_info.get("nmos_width", {})
         pmos_width_config = self.param_info.get("pmos_width", {})
@@ -411,29 +544,7 @@ class ModifiedSRAMParameterSpace:
 
         return [pu_range, pd_range, pg_range, length_range, nmos_choices, pmos_choices]
 
-        if pmos_width_config:
-            pmos_defaults = pmos_width_config["default"]
-            if isinstance(pmos_defaults, (list, tuple)):
-                pu_default = pmos_defaults[0] if pmos_defaults else 9e-8
-            else:
-                pu_default = float(pmos_defaults)
-        else:
-            pu_default = 9e-8
-
-        if length_config:
-            length_default = length_config["default"]
-            # 确保length_default是标量值，如果是列表则取第一个元素
-            if isinstance(length_default, (list, tuple)):
-                length_default = length_default[0]
-        else:
-            length_default = 50e-9
-
-        self.base_pd_width = pd_default
-        self.base_pu_width = pu_default
-        self.base_pg_width = pg_default
-        self.base_length_nm = float(length_default) * 1e9
-
-    def convert_params(self, x):
+    def convert_params(self, x, categorical_indices: bool = False):
         """
         Convert parameters based on configuration
         根据配置转换参数
@@ -482,6 +593,8 @@ class ModifiedSRAMParameterSpace:
                 # 分类型列表参数
                 for i, name in enumerate(info["names"]):
                     val = float(x[dim_idx])
+                    if categorical_indices:
+                        val = categorical_index_to_normalized(val, info["choices"])
                     if val > 1.0:
                         choice_idx = int(val)
                     else:
@@ -492,12 +605,20 @@ class ModifiedSRAMParameterSpace:
                         choice_idx = len(info["choices"]) - 1
 
                     if param_name == "nmos_model":
-                        params["nmos_model_name"] = info["choices"][choice_idx]
+                        model_name = info["choices"][choice_idx]
+                        if name == "pd":
+                            params["pd_model_name"] = model_name
+                        elif name == "pg":
+                            params["pg_model_name"] = model_name
                     elif param_name == "pmos_model":
                         params["pmos_model_name"] = info["choices"][choice_idx]
 
                     dim_idx += 1
 
+        # Keep the old single-model field for callers that only display/log it.
+        # Configuration writes prefer the independent PD/PG fields below.
+        if "pd_model_name" in params:
+            params["nmos_model_name"] = params["pd_model_name"]
         return params
 
     def print_params(self, params):
@@ -507,7 +628,467 @@ class ModifiedSRAMParameterSpace:
             print(f"  {key}: {value}")
 
 
-def evaluate_sram(params, timeout=120):
+# ============================================================================
+# 外围电路参数定义（从YAML动态构建，自动过滤常量）
+# Peripheral circuit parameter definitions (dynamically built from YAML,
+# automatically filtering out constants where upper == lower)
+# ============================================================================
+
+# 硬编码的默认定义作为后备 / Hardcoded defaults as fallback
+_MUX_PARAM_DEFS_FALLBACK = [
+    {"key": "mux_p_width", "type": "continuous", "lower": 1.0e-7, "upper": 1.0e-6, "default": 0.135e-6},
+    {"key": "mux_n_width", "type": "continuous", "lower": 1.0e-7, "upper": 1.0e-6, "default": 0.135e-6},
+    {"key": "mux_length",  "type": "continuous", "lower": 5.0e-8, "upper": 1.5e-7, "default": 50e-9},
+    {"key": "mux_p_model", "type": "categorical", "choices": ["PMOS_VTL", "PMOS_VTG", "PMOS_VTH"], "default": "PMOS_VTG"},
+    {"key": "mux_n_model", "type": "categorical", "choices": ["NMOS_VTL", "NMOS_VTG", "NMOS_VTH"], "default": "NMOS_VTG"},
+]
+_SA_PARAM_DEFS_FALLBACK = [
+    {"key": "sa_p_width", "type": "continuous", "lower": 9.0e-8, "upper": 1.0e-6, "default": 0.54e-6},
+    {"key": "sa_n_width", "type": "continuous", "lower": 9.0e-8, "upper": 1.0e-6, "default": 0.27e-6},
+    {"key": "sa_length",  "type": "continuous", "lower": 5.0e-8, "upper": 1.5e-7, "default": 50e-9},
+    {"key": "sa_p_model", "type": "categorical", "choices": ["PMOS_VTL", "PMOS_VTG", "PMOS_VTH"], "default": "PMOS_VTG"},
+    {"key": "sa_n_model", "type": "categorical", "choices": ["NMOS_VTL", "NMOS_VTG", "NMOS_VTH"], "default": "NMOS_VTG"},
+]
+_WLD_PARAM_DEFS_FALLBACK = [
+    {"key": "wld_nand_p_width", "type": "continuous", "lower": 9.0e-8, "upper": 1.0e-6, "default": 0.27e-6},
+    {"key": "wld_inv_p_width",  "type": "continuous", "lower": 9.0e-8, "upper": 1.0e-6, "default": 0.27e-6},
+    {"key": "wld_nand_n_width", "type": "continuous", "lower": 9.0e-8, "upper": 1.0e-6, "default": 0.18e-6},
+    {"key": "wld_inv_n_width",  "type": "continuous", "lower": 9.0e-8, "upper": 1.0e-6, "default": 0.09e-6},
+    {"key": "wld_length",       "type": "continuous", "lower": 5.0e-8, "upper": 1.5e-7, "default": 50e-9},
+    {"key": "wld_nand_p_model", "type": "categorical", "choices": ["PMOS_VTL", "PMOS_VTG", "PMOS_VTH"], "default": "PMOS_VTG"},
+    {"key": "wld_inv_p_model",  "type": "categorical", "choices": ["PMOS_VTL", "PMOS_VTG", "PMOS_VTH"], "default": "PMOS_VTG"},
+    {"key": "wld_nand_n_model", "type": "categorical", "choices": ["NMOS_VTL", "NMOS_VTG", "NMOS_VTH"], "default": "NMOS_VTG"},
+    {"key": "wld_inv_n_model",  "type": "categorical", "choices": ["NMOS_VTL", "NMOS_VTG", "NMOS_VTH"], "default": "NMOS_VTG"},
+]
+
+
+def _build_scalar_def(param, key, ptype):
+    """从 Parameter 对象构建单个 scalar 参数定义。"""
+    if ptype == "continuous":
+        return {"key": key, "type": "continuous",
+                "lower": float(param.lower), "upper": float(param.upper),
+                "default": float(param.value)}
+    else:
+        return {"key": key, "type": "categorical",
+                "choices": list(param.choices), "default": str(param.value)}
+
+
+def _build_list_def(param, index, key, ptype):
+    """从 Parameter 对象的列表元素构建单个参数定义。"""
+    if ptype == "continuous":
+        return {"key": key, "type": "continuous",
+                "lower": float(param.lower[index]), "upper": float(param.upper[index]),
+                "default": float(param.value[index])}
+    else:
+        val = param.value[index] if isinstance(param.value, list) else param.value
+        return {"key": key, "type": "categorical",
+                "choices": list(param.choices), "default": str(val)}
+
+
+def _is_constant_def(d):
+    """判断参数定义是否为常量（上下限相同或仅1个选项）。"""
+    if d["type"] == "continuous":
+        return d["lower"] == d["upper"]
+    elif d["type"] == "categorical":
+        return len(d["choices"]) <= 1
+    return False
+
+
+def _build_peripheral_defs_from_yaml():
+    """
+    从YAML配置文件动态构建外围电路参数定义，自动过滤上下限相同的常量。
+    Build peripheral param defs from YAML configs, filtering out constants
+    where upper == lower (continuous) or single-choice (categorical).
+
+    Returns:
+        (variable_defs, constant_defs): 变量定义列表和常量定义列表
+    """
+    sram_config = _load_sram_config_from_yaml()
+    all_defs = []
+
+    # --- Column Mux (scalar params) ---
+    mux = sram_config.column_mux
+    for param_name, key, ptype in [
+        ("pmos_width", "mux_p_width", "continuous"),
+        ("nmos_width", "mux_n_width", "continuous"),
+        ("length",     "mux_length",  "continuous"),
+        ("pmos_model", "mux_p_model", "categorical"),
+        ("nmos_model", "mux_n_model", "categorical"),
+    ]:
+        all_defs.append(_build_scalar_def(mux.get_parameter(param_name), key, ptype))
+
+    # --- Sense Amp (scalar params) ---
+    sa = sram_config.senseamp
+    for param_name, key, ptype in [
+        ("pmos_width", "sa_p_width", "continuous"),
+        ("nmos_width", "sa_n_width", "continuous"),
+        ("length",     "sa_length",  "continuous"),
+        ("pmos_model", "sa_p_model", "categorical"),
+        ("nmos_model", "sa_n_model", "categorical"),
+    ]:
+        all_defs.append(_build_scalar_def(sa.get_parameter(param_name), key, ptype))
+
+    # --- Wordline Driver (list + scalar params) ---
+    wld = sram_config.wordline_driver
+    # pmos_width: list [nand_p, inv_p]
+    pw = wld.get_parameter("pmos_width")
+    for i, key in enumerate(["wld_nand_p_width", "wld_inv_p_width"]):
+        all_defs.append(_build_list_def(pw, i, key, "continuous"))
+    # nmos_width: list [nand_n, inv_n]
+    nw = wld.get_parameter("nmos_width")
+    for i, key in enumerate(["wld_nand_n_width", "wld_inv_n_width"]):
+        all_defs.append(_build_list_def(nw, i, key, "continuous"))
+    # length: scalar
+    all_defs.append(_build_scalar_def(wld.get_parameter("length"), "wld_length", "continuous"))
+    # pmos_model: list [nand_p, inv_p]
+    pm = wld.get_parameter("pmos_model")
+    for i, key in enumerate(["wld_nand_p_model", "wld_inv_p_model"]):
+        all_defs.append(_build_list_def(pm, i, key, "categorical"))
+    # nmos_model: list [nand_n, inv_n]
+    nm = wld.get_parameter("nmos_model")
+    for i, key in enumerate(["wld_nand_n_model", "wld_inv_n_model"]):
+        all_defs.append(_build_list_def(nm, i, key, "categorical"))
+
+    # --- Precharge (scalar params, PMOS only) ---
+    prc = sram_config.precharge
+    for param_name, key, ptype in [
+        ("pmos_width", "prc_p_width", "continuous"),
+        ("length",     "prc_length",  "continuous"),
+        ("pmos_model", "prc_p_model", "categorical"),
+    ]:
+        all_defs.append(_build_scalar_def(prc.get_parameter(param_name), key, ptype))
+
+    # 分离变量和常量 / Separate variables from constants
+    variable_defs = [d for d in all_defs if not _is_constant_def(d)]
+    constant_defs = [d for d in all_defs if _is_constant_def(d)]
+
+    if constant_defs:
+        const_keys = [d["key"] for d in constant_defs]
+        print(f"[PeripheralDefs] 以下参数上下限相同，视为常量，不纳入优化: {const_keys}")
+
+    return variable_defs, constant_defs
+
+
+# 尝试从YAML动态构建；失败则使用硬编码后备
+# Try to build from YAML; fall back to hardcoded defaults on failure
+try:
+    PERIPHERAL_PARAM_DEFS, PERIPHERAL_CONSTANT_DEFS = _build_peripheral_defs_from_yaml()
+except Exception as _e:
+    print(f"[PeripheralDefs] 从YAML构建失败 ({_e})，使用硬编码默认定义")
+    PERIPHERAL_PARAM_DEFS = _MUX_PARAM_DEFS_FALLBACK + _SA_PARAM_DEFS_FALLBACK + _WLD_PARAM_DEFS_FALLBACK
+    PERIPHERAL_CONSTANT_DEFS = []
+
+# ---- WLD 参数已加入优化变量（不再固定为常量）----
+# WLD parameters are now included in the optimization search space.
+
+# ---- 降维：将 Column MUX 参数从优化变量移入常量（固定为 YAML 默认值）----
+_MUX_PREFIX = "mux_"
+_mux_vars = [d for d in PERIPHERAL_PARAM_DEFS if d["key"].startswith(_MUX_PREFIX)]
+PERIPHERAL_PARAM_DEFS = [d for d in PERIPHERAL_PARAM_DEFS if not d["key"].startswith(_MUX_PREFIX)]
+PERIPHERAL_CONSTANT_DEFS = PERIPHERAL_CONSTANT_DEFS + _mux_vars
+if _mux_vars:
+    print(f"[PeripheralDefs] MUX 降维: 将 {[d['key'] for d in _mux_vars]} 固定为默认值，不参与优化")
+
+# 外围电路参数 flat key 列表（仅变量，用于优化维度）
+PERIPHERAL_CONTINUOUS_KEYS = [d["key"] for d in PERIPHERAL_PARAM_DEFS if d["type"] == "continuous"]
+PERIPHERAL_CATEGORICAL_KEYS = [d["key"] for d in PERIPHERAL_PARAM_DEFS if d["type"] == "categorical"]
+# ALL_KEYS 包含变量+常量，用于 CSV 记录（确保 CSV 列完整）
+PERIPHERAL_ALL_KEYS = [d["key"] for d in PERIPHERAL_PARAM_DEFS] + [d["key"] for d in PERIPHERAL_CONSTANT_DEFS]
+# 常量 key 列表（仅用于注入固定值）
+PERIPHERAL_CONSTANT_KEYS = [d["key"] for d in PERIPHERAL_CONSTANT_DEFS]
+
+
+class CompositeSRAMParameterSpace:
+    """
+    Bitcell search space carrying the fixed peripheral configuration.
+
+    The compiler freezes peripheral sizing and timing before evaluating cell
+    candidates. Peripheral values remain in each result for provenance, but
+    cannot be sampled independently under that frozen baseline.
+    """
+
+    def __init__(self, config_path: str = "config_sram.yaml"):
+        # Bitcell base space
+        self.bitcell_space = ModifiedSRAMParameterSpace(config_path)
+        self.bitcell_dim = self.bitcell_space.bounds.shape[1]
+
+        # Keep peripheral YAML values consistent with the evaluator's frozen
+        # driver/timing baseline; only bitcell parameters enter the search.
+        self.peripheral_defs = []
+        self.peripheral_constant_defs = [
+            *PERIPHERAL_PARAM_DEFS, *PERIPHERAL_CONSTANT_DEFS,
+        ]
+        self.peripheral_dim = len(self.peripheral_defs)
+
+        # Total dimension (仅变量参数参与优化)
+        self.total_dim = self.bitcell_dim + self.peripheral_dim
+
+        # Build combined bounds: all [0, 1]
+        lower = torch.zeros(self.total_dim)
+        upper = torch.ones(self.total_dim)
+        self.bounds = torch.stack([lower, upper])  # shape: (2, total_dim)
+
+        # Expose param_info for compatibility with get_default_normalized_vector
+        self.param_info = self.bitcell_space.param_info
+
+        # Legacy attributes
+        self._setup_legacy_attributes()
+
+        if self.peripheral_constant_defs:
+            print(f"[CompositeSRAMParameterSpace] 优化维度={self.total_dim} "
+                  f"(bitcell={self.bitcell_dim}, peripheral变量={self.peripheral_dim}, "
+                  f"peripheral常量={len(self.peripheral_constant_defs)})")
+
+    def _setup_legacy_attributes(self):
+        """Forward legacy attributes from the bitcell space."""
+        for attr in ("base_pd_width", "base_pu_width", "base_pg_width", "base_length_nm"):
+            if hasattr(self.bitcell_space, attr):
+                setattr(self, attr, getattr(self.bitcell_space, attr))
+
+    def convert_params(self, x):
+        """
+        Convert normalized [0,1] vector to actual parameter dict.
+        前 bitcell_dim 维 -> bitcell 参数，后 peripheral_dim 维 -> 外围电路变量参数。
+        常量参数自动以固定值注入（不占优化维度）。
+        """
+        if isinstance(x, torch.Tensor):
+            if x.dim() > 1:
+                x = x.flatten()
+        else:
+            x = torch.tensor(x, dtype=torch.float32)
+
+        # --- Bitcell params ---
+        bc_x = x[:self.bitcell_dim]
+        params = self.bitcell_space.convert_params(bc_x)
+
+        # --- Peripheral variable params (仅变量参数从优化向量取值) ---
+        periph_x = x[self.bitcell_dim:]
+        for i, pdef in enumerate(self.peripheral_defs):
+            if i < len(periph_x):
+                val = float(periph_x[i])
+            else:
+                val = 0.5  # fallback to midpoint
+
+            if pdef["type"] == "continuous":
+                actual = pdef["lower"] + val * (pdef["upper"] - pdef["lower"])
+                params[pdef["key"]] = float(actual)
+            elif pdef["type"] == "categorical":
+                choices = pdef["choices"]
+                if val > 1.0:
+                    idx = int(val)
+                else:
+                    idx = int(val * len(choices))
+                idx = max(0, min(idx, len(choices) - 1))
+                params[pdef["key"]] = choices[idx]
+
+        # --- Peripheral constant params (常量参数直接注入默认值) ---
+        for cdef in self.peripheral_constant_defs:
+            params[cdef["key"]] = cdef["default"]
+
+        return params
+
+    def get_default_normalized_vector(self):
+        """
+        Return default normalized vector for the composite space.
+        返回复合空间的默认归一化向量。
+        """
+        # Bitcell defaults
+        bc_defaults = get_default_normalized_vector(self.bitcell_space)
+
+        # Peripheral defaults
+        periph_defaults = []
+        for pdef in self.peripheral_defs:
+            if pdef["type"] == "continuous":
+                rng = pdef["upper"] - pdef["lower"]
+                if rng > 0:
+                    periph_defaults.append((pdef["default"] - pdef["lower"]) / rng)
+                else:
+                    periph_defaults.append(0.5)
+            elif pdef["type"] == "categorical":
+                choices = pdef["choices"]
+                if pdef["default"] in choices:
+                    idx = choices.index(pdef["default"])
+                else:
+                    idx = 0
+                if len(choices) > 1:
+                    periph_defaults.append((idx + 0.01) / float(len(choices)))
+                else:
+                    periph_defaults.append(0.0)
+
+        return list(bc_defaults) + periph_defaults
+
+    def get_physical_bounds(self):
+        """Forward to bitcell space for legacy compatibility."""
+        return self.bitcell_space.get_physical_bounds()
+
+    def print_params(self, params):
+        """Print all parameters."""
+        print("Parameters / 参数:")
+        for key, value in params.items():
+            print(f"  {key}: {value}")
+
+
+def apply_params_to_sram_config(sram_config, params):
+    """
+    Apply both bitcell and peripheral parameters to a loaded SRAM_CONFIG instance.
+    将 bitcell 和外围电路参数写入已加载的 SRAM_CONFIG 实例。
+
+    This function is the single point of truth for writing optimized parameters
+    back into the SRAM configuration before simulation.
+    """
+    # --- Bitcell (sram_6t_cell) ---
+    if "pu_width" in params:
+        sram_config.sram_6t_cell.pmos_width.value = float(params["pu_width"])
+    if "pd_width" in params:
+        sram_config.sram_6t_cell.nmos_width.value[0] = float(params["pd_width"])
+    if "pg_width" in params:
+        sram_config.sram_6t_cell.nmos_width.value[1] = float(params["pg_width"])
+    if "length" in params:
+        sram_config.sram_6t_cell.length.value = float(params["length"])
+    if params.get("pmos_model_name"):
+        pmos_model = params["pmos_model_name"]
+        if pmos_model in sram_config.sram_6t_cell.pmos_model.choices:
+            sram_config.sram_6t_cell.pmos_model.value = pmos_model
+    pd_model = params.get("pd_model_name") or params.get("pd_model")
+    pg_model = params.get("pg_model_name") or params.get("pg_model")
+    if not pd_model and not pg_model:
+        legacy_nmos_model = params.get("nmos_model_name")
+        pd_model = pg_model = legacy_nmos_model
+
+    nmos_models = sram_config.sram_6t_cell.nmos_model.value
+    if not isinstance(nmos_models, list):
+        nmos_models = list(nmos_models) if isinstance(nmos_models, tuple) else [nmos_models, nmos_models]
+        sram_config.sram_6t_cell.nmos_model.value = nmos_models
+    while len(nmos_models) < 2:
+        nmos_models.append(nmos_models[0] if nmos_models else "NMOS_VTG")
+    if pd_model in sram_config.sram_6t_cell.nmos_model.choices:
+        nmos_models[0] = pd_model
+    if pg_model in sram_config.sram_6t_cell.nmos_model.choices:
+        nmos_models[1] = pg_model
+
+    # --- Column Mux ---
+    if "mux_p_width" in params:
+        sram_config.column_mux.pmos_width.value = float(params["mux_p_width"])
+    if "mux_n_width" in params:
+        sram_config.column_mux.nmos_width.value = float(params["mux_n_width"])
+    if "mux_length" in params:
+        sram_config.column_mux.length.value = float(params["mux_length"])
+    if params.get("mux_p_model"):
+        if params["mux_p_model"] in sram_config.column_mux.pmos_model.choices:
+            sram_config.column_mux.pmos_model.value = params["mux_p_model"]
+    if params.get("mux_n_model"):
+        if params["mux_n_model"] in sram_config.column_mux.nmos_model.choices:
+            sram_config.column_mux.nmos_model.value = params["mux_n_model"]
+
+    # --- Sense Amplifier ---
+    if "sa_p_width" in params:
+        sram_config.senseamp.pmos_width.value = float(params["sa_p_width"])
+    if "sa_n_width" in params:
+        sram_config.senseamp.nmos_width.value = float(params["sa_n_width"])
+    if "sa_length" in params:
+        sram_config.senseamp.length.value = float(params["sa_length"])
+    if params.get("sa_p_model"):
+        if params["sa_p_model"] in sram_config.senseamp.pmos_model.choices:
+            sram_config.senseamp.pmos_model.value = params["sa_p_model"]
+    if params.get("sa_n_model"):
+        if params["sa_n_model"] in sram_config.senseamp.nmos_model.choices:
+            sram_config.senseamp.nmos_model.value = params["sa_n_model"]
+
+    # --- Wordline Driver ---
+    if "wld_nand_p_width" in params:
+        wld_pvals = sram_config.wordline_driver.pmos_width.value
+        if isinstance(wld_pvals, list):
+            wld_pvals[0] = float(params["wld_nand_p_width"])
+        else:
+            sram_config.wordline_driver.pmos_width.value = float(params["wld_nand_p_width"])
+    if "wld_inv_p_width" in params:
+        wld_pvals = sram_config.wordline_driver.pmos_width.value
+        if isinstance(wld_pvals, list) and len(wld_pvals) > 1:
+            wld_pvals[1] = float(params["wld_inv_p_width"])
+    if "wld_nand_n_width" in params:
+        wld_nvals = sram_config.wordline_driver.nmos_width.value
+        if isinstance(wld_nvals, list):
+            wld_nvals[0] = float(params["wld_nand_n_width"])
+        else:
+            sram_config.wordline_driver.nmos_width.value = float(params["wld_nand_n_width"])
+    if "wld_inv_n_width" in params:
+        wld_nvals = sram_config.wordline_driver.nmos_width.value
+        if isinstance(wld_nvals, list) and len(wld_nvals) > 1:
+            wld_nvals[1] = float(params["wld_inv_n_width"])
+    if "wld_length" in params:
+        sram_config.wordline_driver.length.value = float(params["wld_length"])
+    if params.get("wld_nand_p_model"):
+        wld_pm = sram_config.wordline_driver.pmos_model.value
+        if isinstance(wld_pm, list):
+            if params["wld_nand_p_model"] in sram_config.wordline_driver.pmos_model.choices:
+                wld_pm[0] = params["wld_nand_p_model"]
+    if params.get("wld_inv_p_model"):
+        wld_pm = sram_config.wordline_driver.pmos_model.value
+        if isinstance(wld_pm, list) and len(wld_pm) > 1:
+            if params["wld_inv_p_model"] in sram_config.wordline_driver.pmos_model.choices:
+                wld_pm[1] = params["wld_inv_p_model"]
+    if params.get("wld_nand_n_model"):
+        wld_nm = sram_config.wordline_driver.nmos_model.value
+        if isinstance(wld_nm, list):
+            if params["wld_nand_n_model"] in sram_config.wordline_driver.nmos_model.choices:
+                wld_nm[0] = params["wld_nand_n_model"]
+    if params.get("wld_inv_n_model"):
+        wld_nm = sram_config.wordline_driver.nmos_model.value
+        if isinstance(wld_nm, list) and len(wld_nm) > 1:
+            if params["wld_inv_n_model"] in sram_config.wordline_driver.nmos_model.choices:
+                wld_nm[1] = params["wld_inv_n_model"]
+
+    # --- Precharge ---
+    if "prc_p_width" in params:
+        sram_config.precharge.pmos_width.value = float(params["prc_p_width"])
+    if "prc_length" in params:
+        sram_config.precharge.length.value = float(params["prc_length"])
+    if params.get("prc_p_model"):
+        if params["prc_p_model"] in sram_config.precharge.pmos_model.choices:
+            sram_config.precharge.pmos_model.value = params["prc_p_model"]
+
+
+@lru_cache(maxsize=64)
+def _baseline_sizes(rows, cols, mux, w_rc, configuration_stamp):
+    """Cache a baseline before any candidate is applied; never run sizing SPICE here."""
+    cfg = _load_sram_config_from_yaml()
+    cfg.global_config.num_rows, cfg.global_config.num_cols = rows, cols
+    return resolve_driver_sizes(cfg, mux=mux, physical_context=physical_context(
+        w_rc, interconnect=getattr(cfg.global_config, 'interconnect', None)))
+
+
+@lru_cache(maxsize=64)
+def _baseline_timing(sizes, w_rc, configuration_stamp):
+    cfg = _load_sram_config_from_yaml()
+    cfg.global_config.num_rows, cfg.global_config.num_cols = sizes.rows, sizes.cols
+    return resolve_timing(cfg, sizes, physical_context(
+        w_rc, interconnect=getattr(cfg.global_config, 'interconnect', None)))
+
+
+def _configuration_stamp():
+    root = Path(__file__).resolve().parents[1]
+    digest = hashlib.sha256()
+    for path in sorted((root / 'sram_compiler/config_yaml').glob('*.yaml')):
+        digest.update(path.read_bytes())
+    for path in sorted((root / 'tran_models').glob('*.spice')):
+        digest.update(path.read_bytes())
+    for path in sorted((root / 'sram_compiler/sizing').glob('*.json')):
+        digest.update(path.read_bytes())
+    global_config = yaml.safe_load((root / 'sram_compiler/config_yaml/global.yaml').read_text())
+    for group in ('sizing', 'timing'):
+        options = global_config.get(group, {})
+        if isinstance(options, dict):
+            for name in ('lookup', 'table'):
+                if options.get(name):
+                    path = Path(options[name])
+                    if not path.is_absolute():
+                        path = root / path
+                    if path.exists():
+                        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def evaluate_sram(params, timeout=120, driver_sizes=None, timing_config=None):
     """
     Execute SRAM evaluation with given parameters
     使用给定参数执行SRAM评估
@@ -518,6 +1099,19 @@ def evaluate_sram(params, timeout=120):
 
     sram_config = SRAM_CONFIG()
     sram_config.load_all_configs(global_file=os.path.join(project_root, "sram_compiler/config_yaml/global.yaml"), circuit_configs={"SRAM_6T_CELL": os.path.join(project_root, "sram_compiler/config_yaml/sram_6t_cell.yaml"), "WORDLINEDRIVER": os.path.join(project_root, "sram_compiler/config_yaml/wordline_driver.yaml"), "PRECHARGE": os.path.join(project_root, "sram_compiler/config_yaml/precharge.yaml"), "COLUMNMUX": os.path.join(project_root, "sram_compiler/config_yaml/mux.yaml"), "SENSEAMP": os.path.join(project_root, "sram_compiler/config_yaml/sa.yaml"), "WRITEDRIVER": os.path.join(project_root, "sram_compiler/config_yaml/write_driver.yaml"), "DECODER": os.path.join(project_root, "sram_compiler/config_yaml/decoder.yaml")})
+
+    num_rows, num_cols = int(params.get('num_rows', 32)), int(params.get('num_cols', 1))
+    choose_mux = bool(params.get('choose_columnmux', False))
+    sram_config.global_config.num_rows = num_rows
+    sram_config.global_config.num_cols = num_cols
+    w_rc = bool(params.get('w_rc', False))
+    if driver_sizes is None:
+        driver_sizes = _baseline_sizes(num_rows, num_cols, choose_mux, w_rc, _configuration_stamp())
+    if timing_config is None:
+        timing_config = _baseline_timing(driver_sizes, w_rc, _configuration_stamp())
+    # Apply candidate values only after the baseline has been frozen.
+    apply_params_to_sram_config(sram_config, params)
+
     try:
         print(f"Starting SRAM evaluation with parameters: {params}")
         print(f"开始使用参数进行SRAM评估: {params}")
@@ -527,31 +1121,41 @@ def evaluate_sram(params, timeout=120):
         # 设置仿真参数
         vdd = 1.0
         pdk_path = os.path.join(project_root, "tran_models/models_TT.spice")
-        num_rows = 32
-        num_cols = 1
         num_mc = 1
+        temperature = sram_config.global_config.temperature
 
-        area = estimate_scaled_total_area(params, num_rows=num_rows, num_cols=num_cols, num_arrays=1)
+        if driver_sizes is None:
+            driver_sizes = resolve_driver_sizes(sram_config, mux=choose_mux,
+                                                physical_context=physical_context(
+                                                    w_rc, interconnect=getattr(sram_config.global_config, 'interconnect', None)))
+        area = estimate_scaled_total_area(params, num_rows=num_rows, num_cols=num_cols,
+                                          num_arrays=1, driver_sizes=driver_sizes)
         print(f"Estimated 6T SRAM cell area: {area*1e12:.2f} µm²")
         print(f"估算的6T SRAM单元面积: {area*1e12:.2f} µm²")
 
-        # Create testbench with parameter sweep configuration
-        # 创建带有参数扫描配置的测试平台
+        # 优化场景下直接使用固定参数值（不用 sweep 模式，否则需要 param_sweep_models.data 文件）
         mc_testbench = Sram6TCoreMcTestbench(
             sram_config,
-            w_rc=True,  # Whether add RC to nets
+            sram_cell_type="SRAM_6T_CELL",
+            w_rc=w_rc,
             pi_res=100 @ u_Ohm,
             pi_cap=0.001 @ u_pF,
             vth_std=0.05,  # Process parameter variation is a percentage of its value in model lib
             custom_mc=False,  # Use your own process params?
-            param_sweep=True,  # 启用参数扫描主开关
-            sweep_precharge=True,  # 扫描预充电电路（影响读取性能）
-            sweep_senseamp=True,  # 扫描灵敏放大器（影响读取灵敏度）
-            sweep_wordlinedriver=True,  # 扫描字线驱动器（影响访问速度）
-            sweep_columnmux=False,  # 不扫描列多路复用器
-            sweep_writedriver=False,  # 不扫描写驱动器
-            sweep_decoder=False,  # 不扫描解码器
-            coner="TT",  # or FF or SS or FS or SF
+            # num_mc = 1: the objective must be deterministic. The MC testbench now
+            # defaults to per-device mismatch, where one unseeded sample is random.
+            variation_mode='nominal',
+            sweep_cell=False,        # 优化时参数由 sram_config 直接设置，无需 sweep
+            sweep_precharge=False,
+            sweep_senseamp=False,
+            sweep_wordlinedriver=False,
+            sweep_columnmux=False,
+            sweep_writedriver=False,
+            sweep_decoder=False,
+            corner="TT",  # or FF or SS or FS or SF
+            choose_columnmux=choose_mux,
+            driver_sizes=driver_sizes,
+            timing_config=timing_config,
             q_init_val=0,
             sim_path="sim",
         )
@@ -567,6 +1171,7 @@ def evaluate_sram(params, timeout=120):
                 target_row=num_rows - 1,
                 target_col=num_cols - 1,
                 mc_runs=num_mc,
+                temperature=temperature,
                 vars=None,
             )
 
@@ -575,6 +1180,7 @@ def evaluate_sram(params, timeout=120):
                 target_row=num_rows - 1,
                 target_col=num_cols - 1,
                 mc_runs=num_mc,
+                temperature=temperature,
                 vars=None,
             )
 
@@ -583,22 +1189,25 @@ def evaluate_sram(params, timeout=120):
                 target_row=num_rows - 1,
                 target_col=num_cols - 1,
                 mc_runs=num_mc,
+                temperature=temperature,
                 vars=None,
             )
 
-            w_delay, w_pavg = mc_testbench.run_mc_simulation(
+            w_delay, w_pavg, w_pstc, w_pdyn = mc_testbench.run_mc_simulation(
                 operation="write",
                 target_row=num_rows - 1,
                 target_col=num_cols - 1,
                 mc_runs=num_mc,
+                temperature=temperature,
                 vars=None,
             )
 
-            r_delay, r_pavg = mc_testbench.run_mc_simulation(
+            r_delay, r_pavg, r_pstc, r_pdyn = mc_testbench.run_mc_simulation(
                 operation="read",
                 target_row=num_rows - 1,
                 target_col=num_cols - 1,
                 mc_runs=num_mc,
+                temperature=temperature,
                 vars=None,
             )
 
@@ -621,8 +1230,12 @@ def evaluate_sram(params, timeout=120):
             read_delay = float(r_delay[0]) if isinstance(r_delay, np.ndarray) else float(r_delay)
             write_delay = float(w_delay[0]) if isinstance(w_delay, np.ndarray) else float(w_delay)
 
-            read_delay_feasible = True
-            write_delay_feasible = True
+            if not all(np.isfinite(value) and value > 0 for value in
+                       (read_delay, write_delay, read_power, write_power, area)):
+                raise ValueError('Simulation returned invalid delay, power or area')
+            limits = sram_config.global_config.metrics.delay.upper
+            read_delay_feasible = read_delay <= float(limits[0])
+            write_delay_feasible = write_delay <= float(limits[1])
             max_delay = max(read_delay, write_delay)
             if min_snm > 0 and max_power > 0 and area > 0 and max_delay > 0:
                 merit = np.log10(min_snm / (max_power * np.sqrt(area) * max_delay))
@@ -631,13 +1244,17 @@ def evaluate_sram(params, timeout=120):
 
             # Construct objectives (for multi-objective optimization)
             # 构建目标函数（用于多目标优化）
-            objectives = [min_snm, -max_power, -area]  # Maximize SNM, minimize power and area
+            # 4目标，全部最小化: [-SNM, power, area, delay]
+            objectives = [-min_snm, max_power, area, max_delay]
 
-            constraints = [0.0, 0.0]
+            constraints = [max(0.0, read_delay / float(limits[0]) - 1.0),
+                           max(0.0, write_delay / float(limits[1]) - 1.0)]
 
             # Construct detailed results
             # 构建详细结果
             result = {"hold_snm": hold_snm_val, "read_snm": read_snm_val, "write_snm": write_snm_val, "min_snm": min_snm, "read_power": read_power, "write_power": write_power, "max_power": max_power, "read_delay": read_delay, "write_delay": write_delay, "max_delay": max_delay, "area": area, "merit": merit, "read_delay_feasible": read_delay_feasible, "write_delay_feasible": write_delay_feasible}
+            result['driver_sizes'] = driver_sizes.to_dict()
+            result['timing'] = mc_testbench.timing_config.to_dict() if mc_testbench.timing_config else {'source': 'fixed', 't_period': float(mc_testbench.t_period)}
 
             end_time = time.time()
             print(f"Simulation completed successfully! Time taken: {end_time - start_time:.2f} seconds")
@@ -650,7 +1267,8 @@ def evaluate_sram(params, timeout=120):
             print(f"Error occurred during simulation: {str(e)}")
             print(f"仿真过程中发生错误: {str(e)}")
             traceback.print_exc()
-            objectives = [10.0, 1e-3, 1e-10]  # Penalty objective function
+            # 4目标惩罚值 (all minimized): [-SNM=0, power=10W, area=1e-3m², delay=10µs]
+            objectives = [0.0, 10.0, 5e-6, 5e-8]
             constraints = [1.0, 1.0]  # Constraint violation
             return objectives, constraints, None, False
 
@@ -658,7 +1276,8 @@ def evaluate_sram(params, timeout=120):
         print(f"Error occurred during overall evaluation: {str(e)}")
         print(f"整体评估过程中发生错误: {str(e)}")
         traceback.print_exc()
-        objectives = [10.0, 1e-3, 1e-10]  # Penalty objective function
+        # 4目标惩罚值 (all minimized): [-SNM=0, power=10W, area=1e-3m², delay=10µs]
+        objectives = [0.0, 10.0, 5e-6, 5e-8]
         constraints = [1.0, 1.0]  # Constraint violation
         return objectives, constraints, None, False
 
@@ -669,7 +1288,7 @@ class BaseOptimizer:
     基础优化器类
     """
 
-    def __init__(self, parameter_space, algorithm_name, num_objectives=3, num_constraints=2, initial_result=None, initial_params=None):
+    def __init__(self, parameter_space, algorithm_name, num_objectives=4, num_constraints=2, initial_result=None, initial_params=None):
         """
         Initialize base optimizer
         初始化基础优化器
@@ -745,125 +1364,3 @@ class BaseOptimizer:
             # Record best Merit history
             # 记录最佳Merit历史
             self.best_history.append(self.best_merit)
-
-
-class OptimizationLogger:
-    """
-    Optimization logger class
-    优化日志记录器类
-    """
-
-    def __init__(self, algorithm_name):
-        self.algorithm_name = algorithm_name
-        self.log_data = []
-
-    def log_iteration(self, iteration, merit, objectives, constraints, success):
-        """
-        Log iteration data
-        记录迭代数据
-        """
-        self.log_data.append({"iteration": iteration, "merit": merit, "objectives": objectives, "constraints": constraints, "success": success})
-
-    def save_log(self, filename):
-        """
-        Save log to file
-        保存日志到文件
-        """
-        with open(filename, "w", newline="") as csvfile:
-            fieldnames = ["iteration", "merit", "objectives", "constraints", "success"]
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            writer.writeheader()
-            for row in self.log_data:
-                writer.writerow(row)
-
-
-def save_pareto_front(pareto_front, filename):
-    """
-    Save Pareto front to file
-    保存Pareto前沿到文件
-    """
-    with open(filename, "w", newline="") as csvfile:
-        fieldnames = ["min_snm", "max_power", "area", "merit"]
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
-        for point in pareto_front:
-            writer.writerow(point)
-
-
-def save_best_result(best_result, algorithm_name, filename):
-    """
-    Save best result to file
-    保存最佳结果到文件
-    """
-    result_data = {"algorithm": algorithm_name, "best_merit": best_result["merit"] if best_result else None, "best_params": best_result["params"] if best_result else None, "best_result": best_result["result"] if best_result else None}
-
-    with open(filename, "w") as jsonfile:
-        json.dump(result_data, jsonfile, indent=2, default=str)
-
-
-def plot_merit_history(merit_history, algorithm_name, filename):
-    """
-    Plot Merit function history
-    绘制Merit函数历史
-    """
-    plt.figure(figsize=(10, 6))
-    plt.plot(merit_history, "b-", linewidth=2)
-    plt.xlabel("Iteration")
-    plt.ylabel("Best Merit")
-    plt.title(f"{algorithm_name} Optimization: Merit vs Iteration")
-    plt.grid(True, alpha=0.3)
-    plt.savefig(filename, dpi=300, bbox_inches="tight")
-    plt.close()
-
-
-def plot_pareto_frontier(pareto_front, algorithm_name, filename):
-    """
-    Plot Pareto frontier
-    绘制Pareto前沿
-    """
-    if len(pareto_front) == 0:
-        return
-
-    fig = plt.figure(figsize=(12, 8))
-    ax = fig.add_subplot(111, projection="3d")
-
-    snm_vals = [p["min_snm"] for p in pareto_front]
-    power_vals = [p["max_power"] for p in pareto_front]
-    area_vals = [p["area"] for p in pareto_front]
-
-    ax.scatter(snm_vals, power_vals, area_vals, c="red", s=50)
-    ax.set_xlabel("Min SNM (V)")
-    ax.set_ylabel("Max Power (W)")
-    ax.set_zlabel("Area (m²)")
-    ax.set_title(f"{algorithm_name} Pareto Frontier")
-
-    plt.savefig(filename, dpi=300, bbox_inches="tight")
-    plt.close()
-
-
-def update_pareto_front(pareto_front, objectives, result):
-    """
-    Update Pareto front
-    更新Pareto前沿
-    """
-    new_point = {"min_snm": objectives[0], "max_power": -objectives[1], "area": -objectives[2], "merit": result["merit"]}  # Convert back from negative  # Convert back from negative
-
-    # Simple Pareto front update (can be optimized)
-    # 简单的Pareto前沿更新（可以优化）
-    pareto_front.append(new_point)
-    return pareto_front
-
-
-def save_optimization_history(history, algorithm_name, filename):
-    """
-    Save optimization history
-    保存优化历史
-    """
-    with open(filename, "w", newline="") as csvfile:
-        fieldnames = ["iteration", "merit", "min_snm", "max_power", "area", "success"]
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
-
-        for entry in history:
-            row = {"iteration": entry["iteration"], "merit": entry["merit"], "min_snm": entry["objectives"][0] if entry["success"] else None, "max_power": -entry["objectives"][1] if entry["success"] else None, "area": -entry["objectives"][2] if entry["success"] else None, "success": entry["success"]}
-            writer.writerow(row)
